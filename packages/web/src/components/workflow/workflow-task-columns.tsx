@@ -26,6 +26,7 @@ export const WORKFLOW_NODE_TYPE_LABEL: Record<string, string> = {
   trigger: '触发器',
   subProcess: '子流程',
   catchNode: '捕获',
+  slaApprove: 'SLA 审批',
 };
 
 /** 会生成任务行的节点类型筛选项（任务监控筛选用） */

@@ -17,6 +17,10 @@ function humanizeSec(sec: number): string {
 
 /** 待办 SLA 标签：未配置→灰、充裕→绿、临近→橙、已超时→红 */
 export default function WorkflowSLATag({ level, overdueSec, deadline }: Props) {
+  // L3：挂起态必须排在 overdueSec==null 拦截之前，否则会被拦成"—"
+  if (level === 'suspended') {
+    return <Tooltip content="SLA 已挂起，计时暂停"><Tag size="small" color="grey">已挂起</Tag></Tooltip>;
+  }
   if (!level || level === 'none' || overdueSec == null) {
     return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>;
   }

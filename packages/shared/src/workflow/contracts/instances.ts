@@ -46,6 +46,42 @@ export const workflowTaskTransferSchema = z.object({
 
 export type WorkflowTaskTransfer = z.infer<typeof workflowTaskTransferSchema>;
 
+/** SLA 申请（延时/挂起/恢复）；挂在原处理人任务行上，供时间线展示 */
+export const workflowSlaRequestSchema = z.object({
+  id: z.number().int(),
+  taskId: z.number().int(),
+  type: z.enum(['DELAY', 'SUSPEND', 'RESUME']),
+  applicantName: z.string().nullable().optional(),
+  requestedDuration: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+  status: z.enum(['PENDING', 'APPROVED', 'REJECTED']),
+  approverName: z.string().nullable().optional(),
+  result: z.string().nullable().optional(),
+  createdAt: z.string(),
+});
+
+export type WorkflowSlaRequest = z.infer<typeof workflowSlaRequestSchema>;
+
+export const createWorkflowSlaRequestSchema = z.object({
+  type: z.enum(['DELAY', 'SUSPEND', 'RESUME']),
+  /** 人类可读时长，如 "2h"/"1d"（时间线展示用） */
+  duration: z.string().max(32).optional(),
+  /** DELAY 必填（时钟顺延依据） */
+  requestedMs: z.number().int().positive().optional(),
+  reason: z.string().max(500).optional(),
+}).refine((v) => v.type !== 'DELAY' || v.requestedMs != null, { message: '延时申请必须提供 requestedMs' });
+
+export const decideWorkflowSlaTaskSchema = z.object({
+  approve: z.boolean(),
+  comment: z.string().max(500).default(''),
+});
+
+export const workflowSlaDecideResultSchema = z.object({
+  /** 会签未达决议 = false（本票已计，等其余审批人） */
+  decided: z.boolean(),
+  approve: z.boolean().optional(),
+});
+
 export const workflowTaskSchema = z.object({
   id: z.int(),
   instanceId: z.int(),
@@ -71,6 +107,8 @@ export const workflowTaskSchema = z.object({
   approveRatio: z.int().nullable().optional().meta({ description: '比例会签通过阈值百分比（仅 ratio 节点）' }),
   externalCallbackId: z.string().nullable().optional().meta({ description: '外部审批回调 ID（waiting + externalApproval 启用时生效）' }),
   actionButtons: z.partialRecord(workflowActionButtonKeySchema, workflowActionButtonConfigSchema).nullable().optional().meta({ description: '当前节点配置中的操作按钮设置（仅审批节点）' }),
+  /** SLA 申请明细（详情场景填充，同 transfers 模式挂在原任务行） */
+  slaRequests: z.array(workflowSlaRequestSchema).nullable().optional(),
   createdAt: z.string(),
 }).meta({ id: 'WorkflowTask' });
 

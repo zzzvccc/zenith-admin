@@ -5,6 +5,8 @@
  * 保存到后端时转换为扁平 nodes + edges 格式。
  */
 
+import type { WorkflowCustomDuration } from '@zenith/shared/workflow';
+
 // ─── 节点类型 ────────────────────────────────────────────────────────
 
 export type FlowNodeType =
@@ -121,6 +123,44 @@ export interface TimeoutConfig {
   escalateManagerLevel?: number;
   /** 转交链路无人可用时的最终兜底策略 */
   escalateFallbackAction?: 'none' | 'autoApprove' | 'autoReject';
+  /** 计时模式（由设计器「开启智能 SLA」开关驱动，非二选一下拉）：wallclock=官方墙钟（默认）；smart=智能 SLA（仅工作日历工作时段计时） */
+  timeoutMode?: 'wallclock' | 'smart';
+  /** timeoutMode='smart' 时的智能 SLA 配置 */
+  smartSla?: SmartSlaConfig;
+  /** 墙钟自定义时限组（timeoutMode='wallclock' 时生效，取代单值 duration/unit） */
+  wallclockOptions?: WorkflowCustomDuration[];
+  /** 工时选择模式：single=通过不弹窗用默认项；multiple=通过弹窗必选 */
+  slaSelectionMode?: 'single' | 'multiple';
+}
+
+/** SLA 审批人（字段与节点审批人同名，便于复用解析逻辑） */
+export interface SmartSlaApprover {
+  assigneeType: 'user' | 'role' | 'department' | 'userGroup' | 'post';
+  userIds?: number[] | null;
+  roleIds?: number[] | null;
+  deptIds?: number[] | null;
+  userGroupIds?: number[] | null;
+  postIds?: number[] | null;
+}
+
+/** 智能 SLA 配置：只在工作日历工作时段计时，支持延时 / 挂起 / 恢复 */
+export interface SmartSlaConfig {
+  enabled: boolean;
+  duration: number;
+  /** workdays = 工作日（按日历每日工时折算） */
+  unit: 'minutes' | 'hours' | 'days' | 'workdays';
+  /** 工作日历 ID */
+  calendarId: number;
+  allowDelay: boolean;
+  allowSuspend: boolean;
+  requireSlaApproval: boolean;
+  slaApprovers: SmartSlaApprover[];
+  /** 0 = 不限次数 */
+  maxDelayCount: number;
+  /** 0 = 不限次数 */
+  maxSuspendCount: number;
+  /** 智能自定义时限组（取代单值 duration/unit 作为智能时限来源） */
+  options?: WorkflowCustomDuration[];
 }
 
 // ─── 节点 Props 类型 ─────────────────────────────────────────────────

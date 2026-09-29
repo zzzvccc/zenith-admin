@@ -12,7 +12,7 @@ import {
   createInstanceRoute, withdrawRoute, cancelInstanceRoute, deleteInstanceRoute,
   updateDraftRoute, submitDraftRoute, resubmitRoute,
 } from './instances/lifecycle';
-import { approveRoute, selectableNextApproversRoute, rejectRoute } from './instances/task-actions';
+import { approveRoute, selectableNextApproversRoute, selectableNextSlaOptionsRoute, rejectRoute } from './instances/task-actions';
 import { transferRoute, delegateRoute, addSignRoute, reduceSignRoute, returnRoute } from './instances/task-routing';
 import {
   ccReadRoute, forwardRoute, urgeRoute, listTaskUrgesRoute,
@@ -21,6 +21,9 @@ import {
 import {
   listCommentsRoute, addCommentRoute, consultRoute, myConsultsRoute, replyConsultRoute,
 } from './instances/comments-consults';
+import {
+  listSlaRequestsRoute, createSlaRequestRoute, decideSlaTaskRoute,
+} from './instances/sla-requests';
 import { batchApproveRoute, batchRejectRoute, batchWithdrawRoute, batchUrgeRoute } from './instances/batch';
 import { diagnosticsRoute, traceRoute, tokensRoute, diagnosticBundleRoute } from './instances/diagnostics';
 import {
@@ -37,7 +40,7 @@ import {
 const router = new OpenAPIHono({ defaultHook: validationHook });
 
 router.openapiRoutes([listRoute, pendingMineRoute, pendingMineCountRoute, pendingDefinitionOptionsRoute, allRoute, ccMineRoute, handledMineRoute, ccUnreadCountRoute, workbenchSummaryRoute, relationOptionsRoute, analyticsRoute, overdueRoute, tasksMonitorRoute, selectableUsersRoute, myConsultsRoute, batchWithdrawRoute, batchUrgeRoute, ccReadRoute, diagnosticsRoute, traceRoute, tokensRoute, diagnosticBundleRoute, detailRoute, printRoute, printVerifyRoute, listCommentsRoute, addCommentRoute, createInstanceRoute, updateDraftRoute, submitDraftRoute, resubmitRoute] as const);
-router.openapiRoutes([withdrawRoute, forwardRoute, cancelInstanceRoute, jumpInstanceRoute, suspendInstanceRoute, resumeInstanceRoute, handoverPreviewRoute, handoverRoute, tokenSkipRoute, tokenReplayRoute, batchSkipStuckRoute, deleteInstanceRoute, batchApproveRoute, batchRejectRoute, approveRoute, selectableNextApproversRoute, rejectRoute, transferRoute, reassignRoute, recallRoute, consultRoute, replyConsultRoute, delegateRoute, addSignRoute, reduceSignRoute, returnRoute, urgeRoute, listTaskUrgesRoute, listInstanceUrgesRoute, urgeInstanceRoute, addInstanceCcRoute] as const);
+router.openapiRoutes([withdrawRoute, forwardRoute, cancelInstanceRoute, jumpInstanceRoute, suspendInstanceRoute, resumeInstanceRoute, handoverPreviewRoute, handoverRoute, tokenSkipRoute, tokenReplayRoute, batchSkipStuckRoute, deleteInstanceRoute, batchApproveRoute, batchRejectRoute, approveRoute, selectableNextApproversRoute, selectableNextSlaOptionsRoute, rejectRoute, transferRoute, reassignRoute, recallRoute, consultRoute, replyConsultRoute, delegateRoute, addSignRoute, reduceSignRoute, returnRoute, urgeRoute, listTaskUrgesRoute, listInstanceUrgesRoute, urgeInstanceRoute, addInstanceCcRoute, listSlaRequestsRoute, createSlaRequestRoute, decideSlaTaskRoute] as const);
 // 静态路径 /compensation/list 必须在参数化 /compensation/{id} 之前注册（RegExpRouter 按注册顺序解析）
 router.openapiRoutes([migratePreflightRoute, migrateRoute, migrationsRoute, migrateBatchRoute, compensationsRoute, compensationResolveRoute, compensationNoteRoute, compensationRetryRoute, compensationResumeRoute, compensationDetailRoute] as const);
 

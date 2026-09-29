@@ -19,7 +19,7 @@ import {
   urgeWorkflowTaskSchema,
   workflowHandoverSchema,
 } from '../validation';
-import { workflowInstanceSchema, workflowTaskConsultSchema, workflowTaskSchema, workflowTaskUrgeSchema } from './instances';
+import { workflowInstanceSchema, workflowTaskConsultSchema, workflowTaskSchema, workflowTaskUrgeSchema, workflowSlaRequestSchema, createWorkflowSlaRequestSchema, decideWorkflowSlaTaskSchema, workflowSlaDecideResultSchema } from './instances';
 
 // ─── 实体 ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +36,17 @@ export const workflowSelectableNextApproverGroupSchema = z.object({
 }).meta({ id: 'WorkflowSelectableNextApproverGroup' });
 
 export type WorkflowSelectableNextApproverGroup = z.infer<typeof workflowSelectableNextApproverGroupSchema>;
+
+/** 审批时「下一节点工时选择」的候选分组：每个紧邻的、slaSelectionMode='multiple' 的下游节点一组 */
+export const workflowSelectableNextSlaOptionGroupSchema = z.object({
+  nodeKey: z.string(),
+  label: z.string(),
+  /** 该节点的计时方式，决定选项组来源（wallclock / smart） */
+  mode: z.enum(['wallclock', 'smart']),
+  options: z.array(z.object({ key: z.string(), label: z.string() })),
+}).meta({ id: 'WorkflowSelectableNextSlaOptionGroup' });
+
+export type WorkflowSelectableNextSlaOptionGroup = z.infer<typeof workflowSelectableNextSlaOptionGroupSchema>;
 
 export const workflowSelectableNextApproversQuery = z.object({
   /** 只返回该节点的分组：按组远程搜索时传入，避免一个组的关键词过滤掉其它组 */
@@ -162,6 +173,7 @@ export const workflowTaskContract = defineContract('/api/workflows', {
   batchReject: op.post('/tasks/batch-reject', { access: { permission: 'workflow:task:handle' }, audit: '批量审批驳回', body: batchRejectWorkflowTaskSchema, response: workflowBatchActionResponseSchema, summary: '批量审批驳回' }),
   approve: op.post('/tasks/{taskId}/approve', { access: { permission: 'workflow:task:handle' }, audit: { description: '审批通过', recordBody: false, recordResponseBody: false }, params: workflowTaskIdParam, body: approveWorkflowTaskSchema, response: workflowInstanceSchema, summary: '审批通过' }),
   selectableNextApprovers: op.get('/tasks/{taskId}/selectable-next-approvers', { access: { permission: 'workflow:task:handle' }, params: workflowTaskIdParam, query: workflowSelectableNextApproversQuery, response: z.array(workflowSelectableNextApproverGroupSchema), summary: '下一节点自选审批人候选（每组限量，可按节点关键词搜索）' }),
+  selectableNextSlaOptions: op.get('/tasks/{taskId}/selectable-next-sla-options', { access: { permission: 'workflow:task:handle' }, params: workflowTaskIdParam, response: z.array(workflowSelectableNextSlaOptionGroupSchema), summary: '下一节点工时选择候选（slaSelectionMode=multiple 的节点及其自定义时限选项）' }),
   reject: op.post('/tasks/{taskId}/reject', { access: { permission: 'workflow:task:handle' }, audit: { description: '审批驳回', recordResponseBody: false }, params: workflowTaskIdParam, body: rejectWorkflowTaskSchema, response: workflowInstanceSchema, summary: '审批驳回' }),
   transfer: op.post('/tasks/{taskId}/transfer', { access: { permission: 'workflow:task:handle' }, audit: { description: '转办任务', recordResponseBody: false }, params: workflowTaskIdParam, body: transferWorkflowTaskSchema, response: workflowTaskSchema, summary: '转办' }),
   reassign: op.post('/tasks/{taskId}/reassign', { access: { permission: 'workflow:instance:cancel' }, audit: { description: '改派审批处理人', recordResponseBody: false }, params: workflowTaskIdParam, body: reassignWorkflowTaskSchema, response: workflowTaskSchema, summary: '管理员改派处理人' }),
@@ -174,4 +186,15 @@ export const workflowTaskContract = defineContract('/api/workflows', {
   returnTask: op.post('/tasks/{taskId}/return', { access: { permission: 'workflow:task:handle' }, audit: { description: '退回任务', recordResponseBody: false }, params: workflowTaskIdParam, body: returnWorkflowTaskSchema, response: workflowInstanceSchema, summary: '退回' }),
   urgeTask: op.post('/tasks/{taskId}/urge', { access: { permission: 'workflow:instance:create' }, audit: '催办任务', params: workflowTaskIdParam, body: urgeWorkflowTaskSchema, response: workflowTaskUrgeSchema, summary: '催办' }),
   taskUrges: op.get('/tasks/{taskId}/urges', { access: { permission: 'workflow:instance:list' }, params: workflowTaskIdParam, response: z.array(workflowTaskUrgeSchema), summary: '查询任务催办历史' }),
+  slaRequests: op.get('/tasks/{taskId}/sla-requests', {
+    access: { permission: 'workflow:task:handle' }, params: workflowTaskIdParam,
+    response: z.array(workflowSlaRequestSchema), summary: '任务的 SLA 申请列表' }),
+  createSlaRequest: op.post('/tasks/{taskId}/sla-requests', {
+    access: { permission: 'workflow:task:handle' }, audit: '发起 SLA 申请',
+    params: workflowTaskIdParam, body: createWorkflowSlaRequestSchema,
+    response: workflowSlaRequestSchema, summary: '发起延时/挂起/恢复申请' }),
+  decideSlaTask: op.post('/tasks/{taskId}/sla-decide', {
+    access: { permission: 'workflow:task:handle' }, audit: 'SLA 审批',
+    params: workflowTaskIdParam, body: decideWorkflowSlaTaskSchema,
+    response: workflowSlaDecideResultSchema, summary: 'SLA 审批（同意/驳回，不推进原节点）' }),
 }, { auditModule: '工作流管理', tags: ['WorkflowInstances'] });

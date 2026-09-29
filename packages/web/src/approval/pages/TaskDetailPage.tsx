@@ -32,7 +32,7 @@ import {
   fetchApprovalPrintPdf,
   fetchNextPendingTask,
   useAddApprovalComment, useApprovalDetail, useApprovalMe, useApprovalQuickPhrases, useApprovalUsers,
-  useSelectableNextApprovers, useTaskAction, useUrgeInstance, useWithdrawInstance,
+  useSelectableNextApprovers, useSlaDecide, useTaskAction, useUrgeInstance, useWithdrawInstance,
   type ApprovalTaskActionVariables,
 } from '../lib/queries';
 import { INSTANCE_STATUS_MAP as STATUS_MAP } from '@/components/workflow/workflow-runtime';
@@ -106,6 +106,7 @@ function TaskDetailContent() {
   const detailQuery = useApprovalDetail(Number.isFinite(instanceId) ? instanceId : null);
   const meQuery = useApprovalMe();
   const actionMutation = useTaskAction();
+  const slaDecideMutation = useSlaDecide();
   const withdrawMutation = useWithdrawInstance();
   const urgeMutation = useUrgeInstance();
   const commentMutation = useAddApprovalComment();
@@ -216,6 +217,18 @@ function TaskDetailContent() {
 
   const submitAction = async () => {
     if (taskId == null || !action) return;
+    // SLA 审批任务分流：走 sla-decide，不推进原节点
+    if (currentTask?.nodeType === 'slaApprove') {
+      try {
+        const values = (await actionFormApi.current?.validate() ?? {}) as { comment?: string };
+        await slaDecideMutation.mutateAsync({ taskId, approve: action === 'approve', comment: values.comment ?? '' });
+        Toast.success(action === 'approve' ? 'SLA 申请已通过' : 'SLA 申请已驳回');
+        setAction(null);
+        return;
+      } catch {
+        return;
+      }
+    }
     try {
       const values = (await actionFormApi.current?.validate() ?? {}) as { comment?: string };
       if (action === 'approve' && needSignature && !signature) {

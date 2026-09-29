@@ -39,6 +39,7 @@ export const workflowNodeTypeSchema = z.enum([
   'trigger',
   'subProcess',
   'catchNode',
+  'slaApprove',
 ]);
 
 export const workflowAssigneeTypeSchema = z.enum([
@@ -79,15 +80,51 @@ export const workflowActionButtonConfigSchema = z.object({
   uploadMode: z.enum(['hidden', 'optional', 'required']).optional(),
 });
 
+/** SLA 审批人（★字段名与 WorkflowNodeConfig 审批人字段同名，供 2.10 伪节点透传解析） */
+export const workflowSlaApproverSchema = z.object({
+  assigneeType: workflowAssigneeTypeSchema,
+  userIds: z.array(z.int()).nullable().optional(),
+  roleIds: z.array(z.int()).nullable().optional(),
+  deptIds: z.array(z.int()).nullable().optional(),
+  userGroupIds: z.array(z.int()).nullable().optional(),
+  postIds: z.array(z.int()).nullable().optional(),
+});
+
+export const workflowCustomDurationSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  duration: z.number().int().min(1),
+  unit: z.enum(['minutes', 'hours', 'days', 'workdays']),
+  isDefault: z.boolean().optional(),
+});
+
+export const workflowSmartSlaConfigSchema = z.object({
+  enabled: z.boolean(),
+  duration: z.number().int().min(1),
+  unit: z.enum(['minutes', 'hours', 'days', 'workdays']),
+  calendarId: z.int(),
+  allowDelay: z.boolean(),
+  allowSuspend: z.boolean(),
+  requireSlaApproval: z.boolean(),
+  slaApprovers: z.array(workflowSlaApproverSchema),
+  maxDelayCount: z.number().int().min(0),
+  maxSuspendCount: z.number().int().min(0),
+  options: z.array(workflowCustomDurationSchema).optional(),
+});
+
 export const workflowTimeoutConfigSchema = z.object({
   enabled: z.boolean(),
   duration: z.number().int().min(1),
   unit: z.enum(['minutes', 'hours', 'days']).optional(),
+  timeoutMode: z.enum(['wallclock', 'smart']).optional(),
+  smartSla: workflowSmartSlaConfigSchema.optional(),
   action: z.enum(['remind', 'autoApprove', 'autoReject']),
   remindCount: z.number().int().min(1).optional(),
   escalateAction: z.enum(['none', 'autoApprove', 'autoReject', 'transferToManager']).optional(),
   escalateManagerLevel: z.number().int().min(1).optional(),
   escalateFallbackAction: z.enum(['none', 'autoApprove', 'autoReject']).optional(),
+  wallclockOptions: z.array(workflowCustomDurationSchema).optional(),
+  slaSelectionMode: z.enum(['single', 'multiple']).optional(),
 });
 
 export const workflowCompensationActionSchema = z.object({
@@ -344,6 +381,39 @@ export const updateWorkflowCategorySchema = partialForUpdate(createWorkflowCateg
 export type CreateWorkflowCategoryInput = z.input<typeof createWorkflowCategorySchema>;
 
 export type UpdateWorkflowCategoryInput = z.input<typeof updateWorkflowCategorySchema>;
+
+// ─── 工作日历（SLA 智能计时） ────────────────────────────────────────────────
+const workCalendarHoursSchema = z.object({
+  start: z.string().regex(/^\d{2}:\d{2}$/, '格式 HH:mm'),
+  end: z.string().regex(/^\d{2}:\d{2}$/, '格式 HH:mm'),
+});
+
+export const createWorkCalendarSchema = z.object({
+  name: z.string().min(1).max(128),
+  timezone: z.string().min(1).max(64).default('Asia/Shanghai'),
+  /** 0=周日 … 6=周六（getUTCDay 编码），周六=6、周日=0 */
+  workdays: z.array(z.number().int().min(0).max(6)).min(1).default([1, 2, 3, 4, 5]),
+  dailyHours: z.array(workCalendarHoursSchema).min(1)
+    .default([{ start: '09:00', end: '12:00' }, { start: '13:00', end: '18:00' }]),
+  status: z.enum(['enabled', 'disabled']).default('enabled'),
+});
+
+export const updateWorkCalendarSchema = partialForUpdate(createWorkCalendarSchema);
+
+export const createWorkCalendarHolidaySchema = z.object({
+  /** yyyy-MM-dd（日历时区） */
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '格式 yyyy-MM-dd'),
+  /** false=放假；true=补班调休 */
+  isWorkday: z.boolean().default(false),
+  /** 补班时覆盖当日时段；不传则沿用日历 dailyHours */
+  specialHours: z.array(workCalendarHoursSchema).nullable().optional(),
+});
+
+export const updateWorkCalendarHolidaySchema = partialForUpdate(createWorkCalendarHolidaySchema);
+
+export type CreateWorkCalendarInput = z.input<typeof createWorkCalendarSchema>;
+
+export type UpdateWorkCalendarInput = z.input<typeof updateWorkCalendarSchema>;
 
 // ─── 表单库 ─────────────────────────────────────────────────────────────────
 
@@ -674,6 +744,8 @@ export const approveWorkflowTaskSchema = z.object({
   attachments: workflowTaskAttachmentsSchema.optional(),
   /** 当紧邻的下一节点为 approverSelect 类型时，由当前审批人按节点指定审批人：{ [nodeKey]: userIds } */
   selectedNextApprovers: workflowSelectedApproversSchema.optional(),
+  /** 当紧邻的下一节点 slaSelectionMode='multiple' 时，由当前审批人按节点挑选时限：{ [nodeKey]: optionKey } */
+  selectedSlaOptions: z.record(z.string(), z.string()).optional(),
   /** 审批人对节点「可编辑」字段的修改（{ 字段key: 新值 }），服务端按节点 fieldPermissions 白名单过滤后合并进实例 formData */
   formUpdates: z.record(z.string(), z.unknown()).optional(),
 });

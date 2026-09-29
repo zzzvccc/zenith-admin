@@ -1,11 +1,12 @@
 import { eq } from 'drizzle-orm';
-import type { WorkflowTimeoutConfig } from '@zenith/shared/workflow';
+import { computeWorkCalendarDeadline, type WorkflowTimeoutConfig } from '@zenith/shared/workflow';
 import { db } from '../../../db';
 import { workflowTasks, workflowInstances } from '../../../db/schema';
 import type { workflowTasks as workflowTasksTable } from '../../../db/schema';
 import { approveTaskCore, rejectTaskCore, systemTransferTaskToManagerInTransaction, mapTask } from '../../../services/workflow/workflow-instances.service';
 import { resolveAdminUserId, resolveUserManagerId, resolveUserDeptHeadId } from '../../../services/workflow/workflow-assignee-resolver.service';
 import { computeTimeoutAt } from '../../workflow-timeout';
+import { loadWorkCalendar } from '../../../services/workflow/calendars.service';
 import { workflowEventBus } from '../../workflow-event-bus';
 import logger from '../../logger';
 import { enqueueJob } from '../engine';
@@ -42,6 +43,24 @@ async function scheduleNextTimeout(
   keySuffix: string,
   executor?: DbExecutor,
 ): Promise<void> {
+  // ─── 智能 SLA（§2.7）：续期改按工作日历口径；日历不可用则降级官方墙钟 ───
+  if (cfg.timeoutMode === 'smart' && cfg.smartSla?.enabled && cfg.smartSla.calendarId) {
+    const cal = await loadWorkCalendar(cfg.smartSla.calendarId, executor);
+    const smartAt = cal
+      ? computeWorkCalendarDeadline(new Date(), cfg.smartSla.duration, cfg.smartSla.unit, cal)
+      : null;
+    const runAt = smartAt ?? computeTimeoutAt(cfg, new Date());
+    if (!runAt) return;
+    await enqueueJob({
+      jobType: 'task_timeout',
+      taskId,
+      payload: { taskId, remindCount },
+      runAt,
+      maxAttempts: 3,
+      idempotencyKey: `task_timeout:${taskId}:${keySuffix}`,
+    }, executor);
+    return;
+  }
   const runAt = computeTimeoutAt(cfg, new Date());
   if (!runAt) return;
   await enqueueJob({

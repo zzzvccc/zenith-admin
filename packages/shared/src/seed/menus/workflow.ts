@@ -23,6 +23,7 @@ export const SEED_MENUS_WORKFLOW: Menu[] = [
   { id: 4060, parentId: 4050, title: '表单设计', name: 'WorkflowFormDesigner', path: '/workflow/forms/designer', component: 'workflow/forms/WorkflowFormDesignerPage', icon: 'PencilRuler', type: 'menu', sort: 4, status: 'enabled', visible: false, createdAt: SEED_DATE, updatedAt: SEED_DATE },
   { id: 4140, parentId: 4300, title: '流程自动化', name: 'WorkflowAutomations', path: '/workflow/automations', component: 'workflow/automations/WorkflowAutomationsPage', icon: 'Bot', type: 'menu', sort: 3, status: 'enabled', visible: true, createdAt: SEED_DATE, updatedAt: SEED_DATE },
   { id: 4170, parentId: 4300, title: '定时发起', name: 'WorkflowSchedules', path: '/workflow/schedules', component: 'workflow/schedules/WorkflowSchedulesPage', icon: 'CalendarClock', type: 'menu', sort: 4, status: 'enabled', visible: true, createdAt: SEED_DATE, updatedAt: SEED_DATE },
+  { id: 4240, parentId: 4300, title: '工作日历', name: 'WorkflowCalendars', path: '/workflow/calendars', component: 'workflow/calendars/WorkCalendarPage', icon: 'CalendarDays', type: 'menu', sort: 5, status: 'enabled', visible: true, createdAt: SEED_DATE, updatedAt: SEED_DATE },
 
   // ─── 运维与集成（运维人员）─────────────────────────────────────────────
   { id: 4400, parentId: 4000, title: '运维与集成', name: 'WorkflowOps', icon: 'Activity', type: 'directory', sort: 2, status: 'enabled', visible: true, createdAt: SEED_DATE, updatedAt: SEED_DATE },

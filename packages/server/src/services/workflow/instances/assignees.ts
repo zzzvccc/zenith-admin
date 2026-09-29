@@ -1,5 +1,5 @@
 // ─── 审批人运行时策略（去重/同发起人替换/管理员兜底）（拆分自 workflow-instances.service.ts）───
-import { eq, ne, and, desc } from 'drizzle-orm';
+import { eq, ne, and, desc, notInArray } from 'drizzle-orm';
 import { workflowTasks } from '../../../db/schema';
 import { type TaskAction } from '../../../lib/workflow-engine';
 import type { WorkflowFlowData, WorkflowApproverDedupMode, WorkflowDeduplicateStrategy } from '@zenith/shared/workflow';
@@ -119,7 +119,8 @@ async function collectDedupApprovers(
     .where(and(
       eq(workflowTasks.instanceId, instanceId),
       eq(workflowTasks.status, 'approved'),
-      ne(workflowTasks.nodeType, 'ccNode'),
+      // P4：SLA 审批任务不是流程节点，排除（与抄送同为非阻塞语义）
+      notInArray(workflowTasks.nodeType, ['ccNode', 'slaApprove']),
     ))
     .orderBy(desc(workflowTasks.id));
   const lastNodeKey = rows[0]?.nodeKey;

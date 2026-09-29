@@ -3,7 +3,7 @@ import { workflowInstanceContract, workflowTaskContract, WORKFLOW_INSTANCE_STATU
 import type { QueryOutputOf } from '@zenith/shared/core';
 // ─── 实例/待办/已办/抄送列表查询与详情（拆分自 workflow-instances.service.ts）───
 import { formatDateTime, formatNullableDateTime } from '../../../lib/datetime';
-import { count, countDistinct, eq, and, desc, or, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { count, countDistinct, eq, and, desc, or, inArray, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { keywordCondition, withPagination, dateRangeConditions, buildWhere } from '../../../lib/where-helpers';
 import { db } from '../../../db';
@@ -11,7 +11,7 @@ import { pageOffset } from '../../../lib/pagination';
 import { workflowInstances, workflowTasks, workflowTaskConsults, workflowDefinitions, workflowCategories, users } from '../../../db/schema';
 import { tenantCondition } from '../../../lib/tenant';
 import { getDataScopeCondition } from '../../../lib/data-scope';
-import type { WorkflowFlowData, WorkflowFormField } from '@zenith/shared/workflow';
+import type { WorkflowFlowData, WorkflowFormField, WorkflowSlaLevel } from '@zenith/shared/workflow';
 import { buildWorkflowSummaryItems, findNextApproverSelectNodes } from '@zenith/shared/workflow';
 import { HTTPException } from 'hono/http-exception';
 import { currentUser, hasPermission } from '../../../lib/context';
@@ -21,6 +21,7 @@ import { buildStarterContext } from '../workflow-assignee-resolver.service';
 import { loadInstanceCommentsForDetail } from '../workflow-comments.service';
 import { loadInstanceConsultsForDetail } from '../workflow-consults.service';
 import { loadInstanceTransfersByTask } from './transfers';
+import { loadInstanceSlaRequestsByTask } from './sla-requests';
 import { mapInstance, mapTask } from './mapping';
 import { buildListResult } from '../../../lib/list-query';
 import { requireRow } from '../../../lib/db-assert';
@@ -72,6 +73,8 @@ async function loadActiveNodeKeysByInstance(instanceIds: number[]): Promise<Map<
     .where(and(
       inArray(workflowTasks.instanceId, [...new Set(instanceIds)]),
       inArray(workflowTasks.status, ['pending', 'waiting']),
+      // P1：SLA 审批任务不是真正的流程节点，排除以免污染「当前节点」
+      ne(workflowTasks.nodeType, 'slaApprove'),
     ))
     .orderBy(workflowTasks.id);
   const map = new Map<number, string[]>();
@@ -134,6 +137,28 @@ function computeTaskSla(timeout: SlaTimeoutInput, createdAt: Date): { slaLevel: 
   if (overdueSec >= 0) slaLevel = 'overdue';
   else if (-overdueSec <= Math.max(3600, totalSec * 0.2)) slaLevel = 'warning';
   else slaLevel = 'safe';
+  return { slaLevel, slaDeadline: formatDateTime(new Date(deadlineMs)), slaOverdueSec: overdueSec };
+}
+
+/**
+ * ★双轨制（§2.8）：落库 sla_* 优先；IDLE/无值回退官方墙钟 computeTaskSla（零改动）；SUSPENDED 单列挂起态。
+ */
+function computeTaskSlaSmart(
+  task: { slaStatus: string | null; slaStartedAt: Date | null; slaDeadline: Date | null },
+  timeout: SlaTimeoutInput,
+  createdAt: Date,
+): { slaLevel: WorkflowSlaLevel; slaDeadline: string | null; slaOverdueSec: number | null } {
+  if (task.slaStatus === 'SUSPENDED') {
+    return { slaLevel: 'suspended', slaDeadline: null, slaOverdueSec: null };   // 挂起不计逾期
+  }
+  if (task.slaStatus !== 'RUNNING' || !task.slaDeadline) return computeTaskSla(timeout, createdAt);
+  const deadlineMs = new Date(task.slaDeadline).getTime();
+  const overdueSec = Math.round((Date.now() - deadlineMs) / 1000);
+  const totalSec = task.slaStartedAt
+    ? Math.max(1, Math.round((deadlineMs - new Date(task.slaStartedAt).getTime()) / 1000))
+    : 3600;
+  const slaLevel: WorkflowSlaLevel = overdueSec >= 0 ? 'overdue'
+    : (-overdueSec <= Math.max(3600, totalSec * 0.2) ? 'warning' : 'safe');   // 阈值与官方一致
   return { slaLevel, slaDeadline: formatDateTime(new Date(deadlineMs)), slaOverdueSec: overdueSec };
 }
 
@@ -208,7 +233,8 @@ export async function listPendingMine(query: QueryOutputOf<typeof workflowInstan
       const pendingSignaturePolicy = node?.signaturePolicy ?? 'none';
       // 紧邻下一节点为「审批人自选」的任务无法批量审批（需逐个指定下一节点审批人），列表提前标注
       const requiresIndividual = pendingSignaturePolicy === 'handwritten' || node?.actionButtons?.approve?.uploadMode === 'required' || (flow ? findNextApproverSelectNodes(flow, r.task.nodeKey).length > 0 : false);
-      const sla = computeTaskSla(node?.timeout, r.task.createdAt);
+      // r.task 为整行 task，天然含 slaStatus/slaStartedAt/slaDeadline
+      const sla = computeTaskSlaSmart(r.task, node?.timeout, r.task.createdAt);
       const summary = resolveInstanceSummary(r.inst, flow);
       const pendingDelegatedFromName = r.task.delegatedFromId ? (delegatorNames.get(r.task.delegatedFromId) ?? `#${r.task.delegatedFromId}`) : null;
       return { ...mapInstance(r.inst, { ...r, currentNodeKeys: activeNodeKeys.get(r.inst.id) }), pendingTaskId: r.task.id, pendingTaskNodeType: r.task.nodeType ?? null, pendingSignaturePolicy, requiresIndividual, summary, pendingDelegatedFromName, pendingDelegationMode: r.task.delegationMode ?? null, ...sla };
@@ -299,7 +325,14 @@ async function countMyPendingConsults(user: ReturnType<typeof currentUser>): Pro
  */
 async function countMyOverduePending(user: ReturnType<typeof currentUser>): Promise<number> {
   const rows = await db
-    .select({ nodeKey: workflowTasks.nodeKey, createdAt: workflowTasks.createdAt, snapshot: workflowInstances.definitionSnapshot })
+    .select({
+      nodeKey: workflowTasks.nodeKey,
+      createdAt: workflowTasks.createdAt,
+      snapshot: workflowInstances.definitionSnapshot,
+      slaStatus: workflowTasks.slaStatus,
+      slaStartedAt: workflowTasks.slaStartedAt,
+      slaDeadline: workflowTasks.slaDeadline,
+    })
     .from(workflowTasks)
     .innerJoin(workflowInstances, eq(workflowTasks.instanceId, workflowInstances.id))
     .where(pendingMineWhere(user));
@@ -307,7 +340,8 @@ async function countMyOverduePending(user: ReturnType<typeof currentUser>): Prom
   for (const row of rows) {
     const flow = row.snapshot?.flowData ?? undefined;
     const node = flow?.nodes.find((n) => n.data.key === row.nodeKey)?.data;
-    if (computeTaskSla(node?.timeout, row.createdAt).slaLevel === 'overdue') overdue += 1;
+    // suspended 不计入逾期角标
+    if (computeTaskSlaSmart(row, node?.timeout, row.createdAt).slaLevel === 'overdue') overdue += 1;
   }
   return overdue;
 }
@@ -517,7 +551,7 @@ async function loadInstanceDetail(id: number, business?: { bizType: string; bizI
   if (!allowed) throw new HTTPException(403, { message: '无权查看' });
   const snapshot = row.definitionSnapshot;
   // 转办明细 / 子实例 / 评论 / 征询相互独立，权限判定通过后并行加载
-  const [transfersByTask, childRows, comments, consults] = await Promise.all([
+  const [transfersByTask, childRows, comments, consults, slaReqByTask] = await Promise.all([
     loadInstanceTransfersByTask(id),
     db.select({
       id: workflowInstances.id,
@@ -530,12 +564,13 @@ async function loadInstanceDetail(id: number, business?: { bizType: string; bizI
       .orderBy(workflowInstances.id),
     loadInstanceCommentsForDetail(id),
     loadInstanceConsultsForDetail(id),
+    loadInstanceSlaRequestsByTask(id),
   ]);
   const tasks = row.tasks.map((t) => {
     const cfg = snapshot?.flowData?.nodes.find((n) => n.data.key === t.nodeKey)?.data;
     const actionButtons = cfg?.actionButtons;
     const signaturePolicy = cfg?.signaturePolicy ?? 'none';
-    return mapTask(t, t.assignee?.nickname, t.assignee?.avatar, actionButtons ?? null, signaturePolicy, transfersByTask.get(t.id) ?? null);
+    return mapTask(t, t.assignee?.nickname, t.assignee?.avatar, actionButtons ?? null, signaturePolicy, transfersByTask.get(t.id) ?? null, slaReqByTask.get(t.id) ?? null);
   });
   const taskNodeKeyById = new Map(row.tasks.map((t) => [t.id, t.nodeKey]));
   const childInstances = childRows.map((c) => ({

@@ -17,7 +17,7 @@ import { findNextApproverSelectNodes, resolveNodeFieldPermissions, sanitizeFormU
 import { HTTPException } from 'hono/http-exception';
 import { currentUser } from '../../../lib/context';
 import { buildStarterContext, searchSelectableApprovers } from '../workflow-assignee-resolver.service';
-import type { WorkflowSelectableNextApproverGroup } from '@zenith/shared/workflow';
+import type { WorkflowSelectableNextApproverGroup, WorkflowSelectableNextSlaOptionGroup } from '@zenith/shared/workflow';
 import logger from '../../../lib/logger';
 import { cancelJobs, WORKFLOW_ADVANCING_JOB_TYPES } from '../../../lib/workflow-jobs/engine';
 import { enqueueSubprocessJoin } from './async-jobs';
@@ -138,15 +138,53 @@ export async function listTaskSelectableNextApprovers(
   }));
 }
 
-export async function approveTask(taskId: number, comment?: string, attachments?: WorkflowTaskAttachment[], selectedNextApprovers?: Record<string, number[]>, signature?: SignatureInput, formUpdates?: Record<string, unknown>): Promise<ApproveResult> {
-  return approveUserTask(taskId, comment, attachments, selectedNextApprovers, signature, formUpdates, false);
+/** 审批时「下一节点工时选择」候选：返回紧邻、且 slaSelectionMode='multiple' 且自定义时限组非空的下游节点及其选项 */
+export async function listTaskSelectableNextSlaOptions(
+  taskId: number,
+): Promise<WorkflowSelectableNextSlaOptionGroup[]> {
+  const user = currentUser();
+  const [task] = await db.select().from(workflowTasks).where(eq(workflowTasks.id, taskId)).limit(1);
+  requireRow(task, '任务不存在或无权操作');
+  if (task.assigneeId !== user.userId) {
+    const wasMine = task.originalAssigneeId === user.userId
+      || task.delegatedFromId === user.userId
+      || await hasUserHandledTask(task.id, user.userId);
+    if (!wasMine) throw new HTTPException(404, { message: '任务不存在或无权操作' });
+    return [];
+  }
+  if (task.status !== 'pending') return [];
+  const [inst] = await db.select().from(workflowInstances).where(eq(workflowInstances.id, task.instanceId)).limit(1);
+  requireRow(inst, '流程实例不存在');
+  const flowData = inst.definitionSnapshot?.flowData;
+  if (!flowData) return [];
+  return findNextApproverSelectNodes(flowData, task.nodeKey)
+    .filter((node) => {
+      const t = node.data.timeout;
+      if (!t || t.slaSelectionMode !== 'multiple') return false;
+      const opts = t.timeoutMode === 'smart' ? t.smartSla?.options : t.wallclockOptions;
+      return Array.isArray(opts) && opts.length > 0;
+    })
+    .map((node) => {
+      const t = node.data.timeout!;
+      const opts = (t.timeoutMode === 'smart' ? t.smartSla?.options : t.wallclockOptions) ?? [];
+      return {
+        nodeKey: node.data.key,
+        label: node.data.label || node.data.key,
+        mode: t.timeoutMode === 'smart' ? 'smart' : 'wallclock',
+        options: opts.map((o) => ({ key: o.key, label: o.label })),
+      };
+    });
+}
+
+export async function approveTask(taskId: number, comment?: string, attachments?: WorkflowTaskAttachment[], selectedNextApprovers?: Record<string, number[]>, signature?: SignatureInput, formUpdates?: Record<string, unknown>, selectedSlaOptions?: Record<string, string>): Promise<ApproveResult> {
+  return approveUserTask(taskId, comment, attachments, selectedNextApprovers, signature, formUpdates, selectedSlaOptions, false);
 }
 
 export async function approveTaskInBatch(taskId: number, comment?: string, signature?: Extract<SignatureInput, { source: 'saved' }>): Promise<ApproveResult> {
-  return approveUserTask(taskId, comment, undefined, undefined, signature, undefined, true);
+  return approveUserTask(taskId, comment, undefined, undefined, signature, undefined, undefined, true);
 }
 
-async function approveUserTask(taskId: number, comment: string | undefined, attachments: WorkflowTaskAttachment[] | undefined, selectedNextApprovers: Record<string, number[]> | undefined, signature: SignatureInput | undefined, formUpdates: Record<string, unknown> | undefined, batch: boolean): Promise<ApproveResult> {
+async function approveUserTask(taskId: number, comment: string | undefined, attachments: WorkflowTaskAttachment[] | undefined, selectedNextApprovers: Record<string, number[]> | undefined, signature: SignatureInput | undefined, formUpdates: Record<string, unknown> | undefined, selectedSlaOptions: Record<string, string> | undefined, batch: boolean): Promise<ApproveResult> {
   const { task, inst, actor } = await getOwnPendingTask(taskId);
   assertIndependentReconApproval(inst.bizType, inst.initiatorId, actor.userId);
   // 校验"操作按钮设置"：通过按钮须启用 + 附件必填（uploadMode === 'required'）
@@ -171,7 +209,7 @@ async function approveUserTask(taskId: number, comment: string | undefined, atta
     }
     const principalName = await findUserDisplayName(task.delegatedFromId);
     const decorated = `[代 ${principalName} 审批] ${comment ?? ''}`.trim();
-    return approveTaskCore(task, inst, decorated, actor, { selectedNextApprovers, signature: signatureSnapshot, attachments, formUpdates: signedFormUpdates });
+    return approveTaskCore(task, inst, decorated, actor, { selectedNextApprovers, selectedSlaOptions, signature: signatureSnapshot, attachments, formUpdates: signedFormUpdates });
   }
   return approveTaskCore(task, inst, comment, actor, { selectedNextApprovers, signature: signatureSnapshot, attachments, formUpdates: signedFormUpdates });
 }
@@ -264,7 +302,7 @@ export async function approveTaskCore(
   inst: typeof workflowInstances.$inferSelect,
   comment: string | undefined,
   actor: WorkflowEventActor,
-  options?: { selectedNextApprovers?: Record<string, number[]>; signature?: SignatureSnapshot; attachments?: WorkflowTaskAttachment[]; formUpdates?: Record<string, unknown> },
+  options?: { selectedNextApprovers?: Record<string, number[]>; selectedSlaOptions?: Record<string, string>; signature?: SignatureSnapshot; attachments?: WorkflowTaskAttachment[]; formUpdates?: Record<string, unknown> },
 ): Promise<ApproveResult> {
   assertIndependentReconApproval(inst.bizType, inst.initiatorId, actor.userId);
   const taskId = task.id;
@@ -307,7 +345,7 @@ export async function approveTaskCore(
     }
 
     // 检查当前节点是否已足够推进（会签/或签/顺序会签）
-    const { completed } = await checkNodeCompletion(tx, inst.id, task.nodeKey, flowData);
+    const { completed } = await checkNodeCompletion(tx, inst.id, task.nodeKey, flowData, options?.selectedSlaOptions);
     if (!completed) {
       const [row] = await tx.update(workflowInstances)
         .set({ currentNodeKey: task.nodeKey })
@@ -333,6 +371,7 @@ export async function approveTaskCore(
       formData,
       settings: flowData.settings,
       selectedNextApprovers: options?.selectedNextApprovers,
+      selectedSlaOptions: options?.selectedSlaOptions,
       starter,
       tenantId: inst.tenantId,
     });

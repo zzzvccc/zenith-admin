@@ -26,6 +26,7 @@ export function mapTask(
   actionButtons?: Partial<Record<WorkflowActionButtonKey, WorkflowActionButtonConfig>> | null,
   signaturePolicy?: WorkflowSignaturePolicy,
   transfers?: import('@zenith/shared').WorkflowTaskTransfer[] | null,
+  slaRequests?: import('@zenith/shared').WorkflowSlaRequest[] | null,
 ) {
   return {
     id: row.id,
@@ -52,6 +53,7 @@ export function mapTask(
     approveRatio: row.approveRatio ?? null,
     actionButtons: actionButtons ?? null,
     externalCallbackId: row.externalCallbackId ?? null,
+    slaRequests: slaRequests ?? null,
     createdAt: formatDateTime(row.createdAt),
   };
 }
@@ -82,7 +84,8 @@ export function mapInstance(
   const snapshotSettings = row.definitionSnapshot?.flowData?.settings;
   const activeNodeKeys = extras.currentNodeKeys
     ?? [...new Set((extras.tasks ?? [])
-      .filter((task) => task.status === 'pending' || task.status === 'waiting')
+      // P2：SLA 审批任务不参与「当前节点」推导
+      .filter((task) => (task.status === 'pending' || task.status === 'waiting') && task.nodeType !== 'slaApprove')
       .map((task) => task.nodeKey))];
   const currentNodeKeys = activeNodeKeys.length > 0 ? activeNodeKeys : (row.currentNodeKey ? [row.currentNodeKey] : []);
   const currentNodeNames = extras.currentNodeNames

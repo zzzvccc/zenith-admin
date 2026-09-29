@@ -65,7 +65,8 @@ export type WorkflowNodeType =
   | 'delay'
   | 'trigger'
   | 'subProcess'
-  | 'catchNode';
+  | 'catchNode'
+  | 'slaApprove';
 
 export type WorkflowConditionOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'notIn' | 'contains' | 'isEmpty' | 'isNotEmpty' | 'between' | 'withinDays' | 'beforeDays';
 
@@ -215,10 +216,53 @@ export interface WorkflowActionButtonConfig {
   uploadMode?: WorkflowActionUploadMode;
 }
 
+/** 超时计时模式：wallclock=官方墙钟（原行为不变），smart=智能 SLA（按工作日历计时） */
+export type WorkflowTimeoutMode = 'wallclock' | 'smart';
+
+/** ★字段与 WorkflowNodeConfig 审批人字段同名——2.10 伪节点解析的前提 */
+export interface WorkflowSlaApprover {
+  assigneeType: WorkflowAssigneeType;
+  userIds?: number[] | null;
+  roleIds?: number[] | null;
+  deptIds?: number[] | null;
+  userGroupIds?: number[] | null;
+  postIds?: number[] | null;
+}
+
+/** 节点级自定义时限条目（墙钟 / 智能 两种计时方式各持一组） */
+export interface WorkflowCustomDuration {
+  /** 全局唯一 key，服务端白名单校验用 */
+  key: string;
+  /** 展示文案，如「4 小时」「1 个工作日」 */
+  label: string;
+  duration: number;
+  unit: 'minutes' | 'hours' | 'days' | 'workdays';
+  /** 是否该组默认项（同组至多一个），单选 / 预填用 */
+  isDefault?: boolean;
+}
+
+export interface WorkflowSmartSlaConfig {
+  enabled: boolean;
+  duration: number;
+  unit: 'minutes' | 'hours' | 'days' | 'workdays';
+  calendarId: number;
+  allowDelay: boolean;
+  allowSuspend: boolean;
+  requireSlaApproval: boolean;
+  slaApprovers: WorkflowSlaApprover[];
+  maxDelayCount: number;
+  maxSuspendCount: number;
+  /** 智能自定义时限组（取代单值 duration/unit 作为智能时限来源；duration/unit 保留作历史兜底） */
+  options?: WorkflowCustomDuration[];
+}
+
 export interface WorkflowTimeoutConfig {
   enabled: boolean;
   duration: number;
-  /** 时间单位（默认 hours，向后兼容） */
+  /**
+   * 时间单位（默认 hours，向后兼容）。
+   * 官方墙钟仅支持 minutes/hours/days；'workdays' 属于智能 SLA，见 smartSla.unit。
+   */
   unit?: 'minutes' | 'hours' | 'days';
   action: 'remind' | 'autoApprove' | 'autoReject';
   remindCount?: number;
@@ -235,6 +279,18 @@ export interface WorkflowTimeoutConfig {
    * 默认 none = 保持挂起但停止重复扫描；也可配置为自动同意/拒绝。
    */
   escalateFallbackAction?: 'none' | 'autoApprove' | 'autoReject';
+  /** 计时模式（默认 wallclock，向后兼容） */
+  timeoutMode?: WorkflowTimeoutMode;
+  /** 智能 SLA 配置（timeoutMode='smart' 且 smartSla.enabled 时生效） */
+  smartSla?: WorkflowSmartSlaConfig;
+  /** 墙钟自定义时限组（timeoutMode='wallclock' 时生效，取代单值 duration/unit；duration/unit 保留作历史兜底） */
+  wallclockOptions?: WorkflowCustomDuration[];
+  /**
+   * 工时选择模式（作用于整节点、不分计时方式）：
+   * - 'single'（默认）：运行时「通过」弹窗不弹工时选择，直接取当前模式自定义组的默认项；
+   * - 'multiple'：运行时「通过」弹窗弹出「工时选择」下拉，上游须必选一项。
+   */
+  slaSelectionMode?: 'single' | 'multiple';
 }
 
 /** 审批节点被驳回时的处理策略 */

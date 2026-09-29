@@ -15,6 +15,7 @@ export * from './helpers';
 export * from './print';
 export * from './serial';
 export * from './permissions';
+export * from './sla-calendar';
 
 export * from './form-signatures';
 export * from './form-attachments';

@@ -68,6 +68,8 @@ function buildRuntimeIssues(input: {
       && t.nodeType !== 'trigger'
       && t.nodeType !== 'subProcess'
       && t.nodeType !== 'delay'
+      // P3：SLA 审批任务的 waiting 有其自身唤醒路径，不算死锁
+      && t.nodeType !== 'slaApprove'
       && !pendingNodeKeys.has(t.nodeKey));
     if (stuckWaiting.length === activeTasks.length) {
       issues.push({

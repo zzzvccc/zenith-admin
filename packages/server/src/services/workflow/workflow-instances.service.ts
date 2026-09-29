@@ -63,6 +63,7 @@ export {
 } from './instances/lifecycle';
 export {
   listTaskSelectableNextApprovers,
+  listTaskSelectableNextSlaOptions,
   approveTask,
   approveTaskByCallback,
   approveTaskCore,

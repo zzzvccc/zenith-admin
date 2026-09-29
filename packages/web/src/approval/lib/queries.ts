@@ -105,6 +105,16 @@ export function useTaskAction() {
   });
 }
 
+/** SLA 审批（同意 / 驳回）：不推进原节点，仅决议申请；移动端入口统一走此处 */
+export function useSlaDecide() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, approve, comment }: { taskId: number; approve: boolean; comment: string }) =>
+      api(workflowTaskContract.decideSlaTask, { params: { taskId }, body: { approve, comment } }, client),
+    onSuccess: () => qc.invalidateQueries({ queryKey: approvalKeys.all }),
+  });
+}
+
 /** 批量同意沿用审批端客户端，逐任务结果由服务端返回；共享确认意图的幂等处理。 */
 export function useBatchApprove() {
   const qc = useQueryClient();

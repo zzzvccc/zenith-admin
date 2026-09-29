@@ -35,8 +35,9 @@ import {
   useWorkflowUserOptions,
   workflowInstanceWithDefinitionQueryOptions,
   type WorkflowNextApproverSearch,
+  useWorkflowSelectableNextSlaOptions,
 } from '@/hooks/queries/workflow-shared';
-import { invalidateAfterTaskAction, useWorkflowTaskAction, type WorkflowTaskActionVariables } from '@/hooks/queries/workflow-tasks';
+import { invalidateAfterTaskAction, useDecideWorkflowSlaTask, useWorkflowTaskAction, type WorkflowTaskActionVariables } from '@/hooks/queries/workflow-tasks';
 
 type ApprovalInitialAction = 'approve' | 'reject' | null;
 const SignatureField = lazy(() => import('@/components/signature/SignatureField'));
@@ -141,6 +142,8 @@ export default function WorkflowApprovalDetailSheet({
   // 候选被服务端限量截断（truncated）的组按组远程搜索；防抖后再发请求
   const [nextApproverSearch, setNextApproverSearch] = useState<WorkflowNextApproverSearch | null>(null);
   const [debouncedNextApproverSearch] = useDebouncedValue(nextApproverSearch, { wait: 300 });
+  const [selectedSlaOptions, setSelectedSlaOptions] = useState<Record<string, string>>({});
+  const resetSlaOptions = useCallback(() => setSelectedSlaOptions({}), []);
   const resetNextApprovers = useCallback(() => {
     setSelectedNextApprovers({});
     setSelectedNextApproverNames({});
@@ -303,6 +306,18 @@ export default function WorkflowApprovalDetailSheet({
   const nextApproversQuery = useWorkflowSelectableNextApprovers(taskId, nextApproversEnabled);
   const selectedNextGroups = nextApproversEnabled ? (nextApproversQuery.data ?? []) : [];
   const hasApproverSelectDownstream = selectedNextGroups.length > 0;
+  const nextSlaOptionsEnabled = visible && taskId != null && detail?.id === instanceId && currentTask?.status === 'pending';
+  const nextSlaOptionsQuery = useWorkflowSelectableNextSlaOptions(taskId, nextSlaOptionsEnabled);
+  const selectedSlaGroups = nextSlaOptionsEnabled ? (nextSlaOptionsQuery.data ?? []) : [];
+  const hasSlaSelectDownstream = selectedSlaGroups.length > 0;
+  useEffect(() => {
+    if (!hasSlaSelectDownstream) return;
+    setSelectedSlaOptions((prev) => {
+      const next: Record<string, string> = {};
+      for (const g of selectedSlaGroups) next[g.nodeKey] = prev[g.nodeKey] ?? g.options[0]?.key ?? '';
+      return next;
+    });
+  }, [hasSlaSelectDownstream, selectedSlaGroups]);
   // 仅 truncated 的组会发起：只取该节点按关键词过滤后的候选
   const nextApproverSearchQuery = useWorkflowSelectableNextApprovers(
     taskId,
@@ -319,7 +334,8 @@ export default function WorkflowApprovalDetailSheet({
     btnApprove.uploadMode === 'required'
     || (currentNodeConfig?.operations?.includes('opinionRequired') ?? false)
     || (currentTask?.signaturePolicy ?? 'none') !== 'none'
-    || hasApproverSelectDownstream;
+    || hasApproverSelectDownstream
+    || hasSlaSelectDownstream;
   const canQuickApprove = !approveNeedsModal && !nextApproversQuery.isFetching;
 
   // 节点表单字段权限：hidden 过滤 + edit 可编辑（仅当前待办处理人可编辑）
@@ -378,6 +394,7 @@ export default function WorkflowApprovalDetailSheet({
       setAttachmentsFor('approve', []);
       setApproveSignature(null);
       resetNextApprovers();
+      resetSlaOptions();
       setApproveVisible(true);
     } else if (initialAction === 'reject') {
       void openReject();
@@ -397,11 +414,25 @@ export default function WorkflowApprovalDetailSheet({
   }, [instanceId, onActionDone, onClose, queryClient]);
 
   const taskActionMutation = useWorkflowTaskAction();
-  const submitting = taskActionMutation.isPending;
+  const slaDecideMutation = useDecideWorkflowSlaTask();
+  const submitting = taskActionMutation.isPending || slaDecideMutation.isPending;
 
   const handleApprove = async () => {
     if (taskId == null) return;
     if (submitting) return;
+    // SLA 审批任务分流：走 sla-decide，绝不走 taskActionMutation（不推进原节点）
+    if (currentTask?.nodeType === 'slaApprove') {
+      try {
+        const values = await approveFormApi.current?.validate();
+        await slaDecideMutation.mutateAsync({ params: { taskId }, body: { approve: true, comment: values?.comment ?? '' } });
+        Toast.success('SLA 申请已通过');
+        setApproveVisible(false);
+        closeAfterAction();
+      } catch {
+        // request failed
+      }
+      return;
+    }
     const policy = currentTask?.signaturePolicy ?? 'none';
     const needSignature = policy !== 'none';
     try {
@@ -422,6 +453,13 @@ export default function WorkflowApprovalDetailSheet({
           return;
         }
       }
+      if (hasSlaSelectDownstream) {
+        const missing = selectedSlaGroups.find((g) => !(selectedSlaOptions[g.nodeKey] ?? g.options[0]?.key));
+        if (missing) {
+          Toast.error(`请选择「${missing.label}」的时限`);
+          return;
+        }
+      }
       const formUpdates = await collectFormUpdates();
       await taskActionMutation.mutateAsync({
         taskId,
@@ -431,6 +469,9 @@ export default function WorkflowApprovalDetailSheet({
           attachments: attachmentsPayload('approve'),
           signature: needSignature ? approveSignature ?? undefined : undefined,
           selectedNextApprovers: hasApproverSelectDownstream ? selectedNextApprovers : undefined,
+          selectedSlaOptions: hasSlaSelectDownstream
+            ? Object.fromEntries(selectedSlaGroups.map((g) => [g.nodeKey, selectedSlaOptions[g.nodeKey] ?? g.options[0]?.key ?? '']))
+            : undefined,
           formUpdates,
         },
       });
@@ -448,6 +489,19 @@ export default function WorkflowApprovalDetailSheet({
   const handleReject = async () => {
     if (taskId == null) return;
     if (submitting) return;
+    // SLA 审批任务分流：驳回同样走 sla-decide
+    if (currentTask?.nodeType === 'slaApprove') {
+      try {
+        const values = await rejectFormApi.current?.validate() as Record<string, unknown>;
+        await slaDecideMutation.mutateAsync({ params: { taskId }, body: { approve: false, comment: (values.comment as string) ?? '' } });
+        Toast.success('SLA 申请已驳回');
+        setRejectVisible(false);
+        closeAfterAction();
+      } catch {
+        // request failed
+      }
+      return;
+    }
     try {
       const values = await rejectFormApi.current?.validate() as Record<string, unknown>;
       if (!ensureUploadSatisfied(btnReject, 'reject')) return;
@@ -578,6 +632,7 @@ export default function WorkflowApprovalDetailSheet({
     setAttachmentsFor('approve', []);
     setApproveSignature(null);
     resetNextApprovers();
+    resetSlaOptions();
     setApproveVisible(true);
   };
 
@@ -686,7 +741,7 @@ export default function WorkflowApprovalDetailSheet({
       <AppModal
         title={approveLabel}
         visible={approveVisible}
-        onCancel={() => { setApproveVisible(false); setAttachmentsFor('approve', []); setApproveSignature(null); resetNextApprovers(); if (!detailSheetVisible) onClose(); }}
+        onCancel={() => { setApproveVisible(false); setAttachmentsFor('approve', []); setApproveSignature(null); resetNextApprovers(); resetSlaOptions(); if (!detailSheetVisible) onClose(); }}
         onOk={() => void handleApprove()}
         okButtonProps={{ loading: submitting, type: 'primary', disabled: detailLoading || !currentTask || (signaturePolicy !== 'none' && !approveSignature) }}
         okText={signaturePolicy === 'none' ? '确认' : approveLabel}
@@ -713,6 +768,26 @@ export default function WorkflowApprovalDetailSheet({
                   policy={signaturePolicy} autoSelectSaved={signaturePolicy === 'reusable'} />
               </Suspense>
             </div>
+          </div>
+        )}
+        {hasSlaSelectDownstream && (
+          <div style={{ marginTop: 12 }}>
+            <Typography.Text strong>工时选择</Typography.Text>
+            <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginBottom: 6 }}>
+              后续节点要求指定处理时限，请为每个节点选择一项（已预填默认）
+            </Typography.Text>
+            {selectedSlaGroups.map((group) => (
+              <div key={group.nodeKey} style={{ marginBottom: 8 }}>
+                <Typography.Text size="small" style={{ display: 'block', marginBottom: 2 }}>{group.label}</Typography.Text>
+                <Select
+                  value={selectedSlaOptions[group.nodeKey] ?? group.options[0]?.key}
+                  placeholder="请选择时限"
+                  style={{ width: '100%' }}
+                  optionList={group.options.map((o) => ({ value: o.key, label: o.label }))}
+                  onChange={(v) => setSelectedSlaOptions((prev) => ({ ...prev, [group.nodeKey]: v as string }))}
+                />
+              </div>
+            ))}
           </div>
         )}
         {hasApproverSelectDownstream && (

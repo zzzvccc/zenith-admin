@@ -10,13 +10,11 @@ import { createDeptTree, resolveAssigneeIds } from '../workflow-assignee-resolve
 import { decide } from '../../platform/rules-runtime.service';
 import type { DbExecutor } from '../../../db/types';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { enqueueJob } from '../../../lib/workflow-jobs/engine';
-import { computeTimeoutAt } from '../../../lib/workflow-timeout';
 import { resolveActiveDelegate } from '../workflow-delegations.service';
 import { resolveAdminUserId } from '../workflow-assignee-resolver.service';
 import { notifyWithin } from '../../messaging/notification-outbox.service';
 import { applyAssigneeRuntimeStrategies } from './assignees';
-import { armTaskAsyncJobs } from './async-jobs';
+import { armTaskAsyncJobs, scheduleTaskTimeout, resolveSlaOverride } from './async-jobs';
 import { findExceptionCatchNode } from './mapping';
 
 /**
@@ -33,7 +31,7 @@ interface ExpandedTaskRows {
   autoRejectedNodeKey: string | null;
 }
 
-type ExpandTasksContext = { instanceId: number; initiatorId: number; executor: DbExecutor; formData?: Record<string, unknown>; settings?: WorkflowFlowData['settings']; selectedNextApprovers?: Record<string, number[]>; flowData?: WorkflowFlowData };
+type ExpandTasksContext = { instanceId: number; initiatorId: number; executor: DbExecutor; formData?: Record<string, unknown>; settings?: WorkflowFlowData['settings']; selectedNextApprovers?: Record<string, number[]>; selectedSlaOptions?: Record<string, string>; flowData?: WorkflowFlowData };
 
 async function pushAdminFallbackOrReject(args: {
   rows: ExpandedTaskRow[];
@@ -451,7 +449,7 @@ export type MaterializeTrigger =
  */
 export async function advanceAndMaterialize(
   trigger: MaterializeTrigger,
-  ctx: { instanceId: number; initiatorId: number; executor: DbExecutor; flowData: WorkflowFlowData; formData: Record<string, unknown>; settings?: WorkflowFlowData['settings']; selectedNextApprovers?: Record<string, number[]>; starter?: WorkflowStarterContext; tenantId?: number | null; scopeKey?: string | null },
+  ctx: { instanceId: number; initiatorId: number; executor: DbExecutor; flowData: WorkflowFlowData; formData: Record<string, unknown>; settings?: WorkflowFlowData['settings']; selectedNextApprovers?: Record<string, number[]>; selectedSlaOptions?: Record<string, string>; starter?: WorkflowStarterContext; tenantId?: number | null; scopeKey?: string | null },
 ): Promise<{ createdTasks: typeof workflowTasks.$inferSelect[]; finished: boolean; rejected: boolean; currentNodeKeys: string[] }> {
   const exec = ctx.executor;
   const createdTasks: typeof workflowTasks.$inferSelect[] = [];
@@ -531,7 +529,13 @@ export async function advanceAndMaterialize(
         createdTasks.push(...inserted);
         // 事务内装配异步作业（延时/超时/触发器/外部派发/子流程发起），与任务行同生共死，避免提交后进程崩溃丢作业
         for (const t of inserted) {
-          await armTaskAsyncJobs(t, { id: ctx.instanceId, flowData: ctx.flowData, formData: ctx.formData, tenantId: ctx.tenantId ?? null }, exec);
+          // 上游「通过」时若为本节点挑选了非默认时限（slaSelectionMode='multiple'），一次性排正确的超时作业（带 override）。
+          // 必须在 armTaskAsyncJobs 内部完成：若先默认排程、再补 scheduleTaskTimeout，第二次 enqueue 会因相同
+          // idempotencyKey(`task_timeout:${task.id}`) 被 onConflictDoNothing 拦截，导致 job 的 runAt 锁死为默认档期，
+          // 与 slaDeadline 字段不一致（即「选了 8 小时却按 4 小时算」的根因）。
+          const optKey = ctx.selectedSlaOptions?.[t.nodeKey];
+          const ov = optKey ? resolveSlaOverride(ctx.flowData, t.nodeKey, optKey) : undefined;
+          await armTaskAsyncJobs(t, { id: ctx.instanceId, flowData: ctx.flowData, formData: ctx.formData, tenantId: ctx.tenantId ?? null }, exec, ov);
         }
       }
       autoApprovedNodeKeys = expanded.autoApprovedNodeKeys;
@@ -601,6 +605,7 @@ export async function checkNodeCompletion(
   instanceId: number,
   nodeKey: string,
   flowData?: WorkflowFlowData,
+  selectedSlaOptions?: Record<string, string>,
 ): Promise<{ completed: boolean; method: WorkflowResolvedApproveMethod | null }> {
   const allRows = await tx.select().from(workflowTasks)
     .where(and(eq(workflowTasks.instanceId, instanceId), eq(workflowTasks.nodeKey, nodeKey)));
@@ -659,13 +664,11 @@ export async function checkNodeCompletion(
       .filter((t) => t.status === 'waiting')
       .sort((a, b) => (a.taskOrder ?? 0) - (b.taskOrder ?? 0))[0];
     if (nextWaiting) {
-      const nextTimeoutCfg = flowData?.nodes.find((n) => n.data.key === nodeKey)?.data.timeout;
-      const nextTimeoutAt = computeTimeoutAt(nextTimeoutCfg);
       await tx.update(workflowTasks).set({ status: 'pending' })
         .where(eq(workflowTasks.id, nextWaiting.id));
-      if (nextTimeoutAt) {
-        await enqueueJob({ jobType: 'task_timeout', taskId: nextWaiting.id, instanceId, nodeKey, payload: { taskId: nextWaiting.id }, runAt: nextTimeoutAt, maxAttempts: 3, idempotencyKey: `task_timeout:${nextWaiting.id}` }, tx);
-      }
+      const nextTimeoutCfg = flowData?.nodes.find((n) => n.data.key === nodeKey)?.data.timeout;
+      const slaOverride = resolveSlaOverride(flowData, nodeKey, selectedSlaOptions?.[nodeKey]);
+      await scheduleTaskTimeout(tx, nextWaiting, nextTimeoutCfg, instanceId, null, slaOverride);
     }
     return { completed: false, method };
   }

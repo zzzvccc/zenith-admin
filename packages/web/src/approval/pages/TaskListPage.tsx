@@ -13,7 +13,7 @@ import WorkflowSummaryLine from '@/components/workflow/WorkflowSummaryLine';
 import WorkflowSLATag from '@/components/workflow/WorkflowSLATag';
 import WorkflowPriorityTag from '@/components/workflow/WorkflowPriorityTag';
 import {
-  useApprovalCounts, useApprovalList, useBatchApprove, useMarkCcRead, useTaskAction,
+  useApprovalCounts, useApprovalList, useBatchApprove, useMarkCcRead, useSlaDecide, useTaskAction,
   type ApprovalListItem, type ApprovalTab,
 } from '../lib/queries';
 import { useInfiniteSentinel, usePullRefresh } from '../lib/usePullRefresh';
@@ -138,6 +138,7 @@ function TaskListContent() {
   const countsQuery = useApprovalCounts();
   const markCcRead = useMarkCcRead();
   const quickAction = useTaskAction();
+  const slaDecideMutation = useSlaDecide();
   const [quickTaskId, setQuickTaskId] = useState<number | null>(null);
   // 批量审批模式（对标钉钉批量同意）：勾选集合为 pendingTaskId
   const [batchMode, setBatchMode] = useState(false);
@@ -205,6 +206,24 @@ function TaskListContent() {
   const quickApprove = (item: ApprovalListItem) => {
     const pendingTaskId = item.pendingTaskId;
     if (!pendingTaskId) return;
+    // SLA 审批任务分流：走 sla-decide，绝不走 quickAction（pendingTaskNodeType 后端已返回）
+    if (item.pendingTaskNodeType === 'slaApprove') {
+      Modal.confirm({
+        title: '极速同意',
+        content: `确认同意「${item.title}」的 SLA 申请？`,
+        okText: '同意',
+        onOk: async () => {
+          setQuickTaskId(pendingTaskId);
+          try {
+            await slaDecideMutation.mutateAsync({ taskId: pendingTaskId, approve: true, comment: '' });
+            Toast.success('SLA 申请已通过');
+          } finally {
+            setQuickTaskId(null);
+          }
+        },
+      });
+      return;
+    }
     Modal.confirm({
       title: '极速同意',
       content: `确认同意「${item.title}」？`,

@@ -148,6 +148,20 @@
       "when": 1790577579660,
       "tag": "0020_magenta_omega_red",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790641010177,
+      "tag": "0021_add_sla_approve_node_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790613236700,
+      "tag": "0022_rare_wallow",
+      "breakpoints": true
     }
   ]
 }

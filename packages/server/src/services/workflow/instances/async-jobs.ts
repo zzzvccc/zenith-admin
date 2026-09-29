@@ -1,11 +1,14 @@
 // ─── 任务异步作业（延时唤醒/触发器重试/超时）（拆分自 workflow-instances.service.ts）───
+import { eq } from 'drizzle-orm';
+import { computeWorkCalendarDeadline } from '@zenith/shared/workflow';
 import { db } from '../../../db';
 import { workflowInstances, workflowTasks } from '../../../db/schema';
 import { type TaskAction } from '../../../lib/workflow-engine';
-import type { WorkflowFlowData } from '@zenith/shared/workflow';
+import type { WorkflowFlowData, WorkflowTimeoutConfig } from '@zenith/shared/workflow';
 import type { DbExecutor } from '../../../db/types';
 import { enqueueJob } from '../../../lib/workflow-jobs/engine';
 import { computeTimeoutAt } from '../../../lib/workflow-timeout';
+import { loadWorkCalendar } from '../calendars.service';
 import type { WorkflowTriggerNodeConfig } from '@zenith/shared/workflow';
 import dayjs from 'dayjs';
 
@@ -59,6 +62,7 @@ export async function armTaskAsyncJobs(
   task: typeof workflowTasks.$inferSelect,
   inst: { id: number; flowData: WorkflowFlowData | null; formData: Record<string, unknown> | null; tenantId: number | null },
   executor: DbExecutor = db,
+  slaOverride?: { duration: number; unit: 'minutes' | 'hours' | 'days' | 'workdays' } | null,
 ): Promise<void> {
   const cfg = inst.flowData?.nodes.find((n) => n.data.key === task.nodeKey)?.data;
   if (!cfg) return;
@@ -90,9 +94,77 @@ export async function armTaskAsyncJobs(
     return;
   }
   if ((task.nodeType === 'approve' || task.nodeType === 'handler') && task.status === 'pending') {
-    const timeoutAt = computeTimeoutAt(cfg.timeout);
-    if (timeoutAt) {
-      await enqueueJob({ ...base, jobType: 'task_timeout', runAt: timeoutAt, maxAttempts: 3, idempotencyKey: `task_timeout:${task.id}` }, executor);
-    }
+    await scheduleTaskTimeout(executor, task, cfg.timeout, inst.id, tenantId, slaOverride);
   }
+}
+
+/**
+ * 为任务排「超时」作业（统一作业账本）：
+ * - 智能 SLA（§2.6）：按工作日历口径算截止、落库 slaStatus/slaStartedAt/slaDeadline，再排 task_timeout；日历不可用则降级官方墙钟。
+ * - 否则（墙钟模式）：computeTimeoutAt 直接排程。
+ * 供任务创建（armTaskAsyncJobs）与串行节点下游任务提升（materialize）共用，避免两处口径不一致。
+ */
+export async function scheduleTaskTimeout(
+  executor: DbExecutor,
+  task: { id: number; nodeKey: string | null },
+  cfgTimeout: WorkflowTimeoutConfig | undefined | null,
+  instanceId: number,
+  tenantId: number | null = null,
+  override?: { duration: number; unit: 'minutes' | 'hours' | 'days' | 'workdays' } | null,
+): Promise<void> {
+  const base = {
+    instanceId,
+    nodeKey: task.nodeKey,
+    taskId: task.id,
+    tenantId,
+    payload: { taskId: task.id },
+  } as const;
+
+  if (!cfgTimeout?.enabled) return;
+
+  const startAt = new Date();
+  let deadline: Date | null = null;
+
+  // 智能 SLA：优先按工作日历口径算截止（跳过午休 / 周末 / 节假日）
+  if (cfgTimeout.timeoutMode === 'smart' && cfgTimeout.smartSla?.enabled && cfgTimeout.smartSla.calendarId) {
+    const cal = await loadWorkCalendar(cfgTimeout.smartSla.calendarId, executor);
+    if (cal) {
+      const dur = override?.duration ?? cfgTimeout.smartSla.duration;
+      const unit = override?.unit ?? cfgTimeout.smartSla.unit ?? 'hours';
+      deadline = computeWorkCalendarDeadline(startAt, dur, unit, cal);
+    }
+    // cal==null / 扫描耗尽 → deadline 仍为 null，下方降级官方墙钟（D6：绝不静默吞掉）
+  }
+
+  // 墙钟模式 或 智能日历不可用：官方墙钟口径兜底；同样落库 SLA 列，保持时钟状态一致
+  if (!deadline) {
+    const dur = override?.duration ?? cfgTimeout.duration;
+    const unit = (override?.unit ?? cfgTimeout.unit ?? 'hours') as 'minutes' | 'hours' | 'days';
+    deadline = computeTimeoutAt({ ...cfgTimeout, duration: dur, unit }, startAt);
+  }
+
+  if (deadline) {
+    await executor.update(workflowTasks)
+      .set({ slaStatus: 'RUNNING', slaStartedAt: startAt, slaDeadline: deadline })
+      .where(eq(workflowTasks.id, task.id));
+    await enqueueJob({ ...base, jobType: 'task_timeout', runAt: deadline, maxAttempts: 3, idempotencyKey: `task_timeout:${task.id}` }, executor);
+  }
+}
+
+/**
+ * 依据上游「通过」时挑选的 optionKey，从节点自定义时限组中解析出真实 duration/unit（供 scheduleTaskTimeout 覆盖默认项）。
+ * - optionKey 为空 → 返回 undefined（用设计器默认单值，即默认项同步值）。
+ * - 找不到对应组 / key → 返回 undefined（安全回退默认项，绝不破坏墙钟 / 智能计时）。
+ */
+export function resolveSlaOverride(
+  flowData: WorkflowFlowData | undefined,
+  nodeKey: string,
+  optionKey?: string,
+): { duration: number; unit: 'minutes' | 'hours' | 'days' | 'workdays' } | undefined {
+  if (!optionKey) return undefined;
+  const t = flowData?.nodes?.find((n) => n.data.key === nodeKey)?.data.timeout;
+  if (!t) return undefined;
+  const group = t.timeoutMode === 'smart' ? t.smartSla?.options : t.wallclockOptions;
+  const picked = group?.find((o) => o.key === optionKey);
+  return picked ? { duration: picked.duration, unit: picked.unit } : undefined;
 }

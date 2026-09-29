@@ -3,6 +3,7 @@ export * from './business';
 export * from './automations';
 export * from './callbacks';
 export * from './categories';
+export * from './calendars';
 export * from './connectors';
 export * from './data-sources';
 export * from './definitions';

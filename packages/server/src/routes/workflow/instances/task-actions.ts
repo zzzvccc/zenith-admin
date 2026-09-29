@@ -5,7 +5,7 @@ import { setAuditAfterData, setAuditBeforeData } from '../../../middleware/guard
 import { idempotencyGuard } from '../../../middleware/idempotency';
 import { defineContractRoute } from '../../../lib/contract-route';
 import { okBody } from '../../../lib/openapi-schemas';
-import { approveTask, rejectTask, getWorkflowTaskBeforeAudit, listTaskSelectableNextApprovers } from '../../../services/workflow/workflow-instances.service';
+import { approveTask, rejectTask, getWorkflowTaskBeforeAudit, listTaskSelectableNextApprovers, listTaskSelectableNextSlaOptions } from '../../../services/workflow/workflow-instances.service';
 
 export const approveRoute = defineContractRoute(workflowTaskContract.approve, {
   middleware: [idempotencyGuard({ ttlSeconds: 10 })],
@@ -22,6 +22,10 @@ export const approveRoute = defineContractRoute(workflowTaskContract.approve, {
 
 export const selectableNextApproversRoute = defineContractRoute(workflowTaskContract.selectableNextApprovers, {
   handler: async (c) => c.json(okBody(await listTaskSelectableNextApprovers(c.req.valid('param').taskId, c.req.valid('query'))), 200),
+});
+
+export const selectableNextSlaOptionsRoute = defineContractRoute(workflowTaskContract.selectableNextSlaOptions, {
+  handler: async (c) => c.json(okBody(await listTaskSelectableNextSlaOptions(c.req.valid('param').taskId)), 200),
 });
 
 export const rejectRoute = defineContractRoute(workflowTaskContract.reject, {

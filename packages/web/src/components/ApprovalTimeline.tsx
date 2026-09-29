@@ -59,7 +59,8 @@ const METHOD_PROGRESS_LABEL: Record<string, string> = {
 function buildNodeProgress(tasks: WorkflowTask[]): Map<number, string> {
   const byNode = new Map<string, WorkflowTask[]>();
   for (const t of tasks) {
-    if (t.nodeType === 'ccNode' || t.signType === 'excluded') continue;
+    // P2b：SLA 审批任务不是流程节点，排除（与 ccNode 同位置）
+    if (t.nodeType === 'ccNode' || t.nodeType === 'slaApprove' || t.signType === 'excluded') continue;
     const arr = byNode.get(t.nodeKey) ?? [];
     arr.push(t);
     byNode.set(t.nodeKey, arr);
@@ -293,6 +294,22 @@ export default function ApprovalTimeline({ tasks, flowNodes, initiator, instance
                     <span>委派任务 · 反馈后回到原委派人</span>
                   </span>
                 )}
+              </div>
+            )}
+
+            {/* SLA 申请明细（延时 / 挂起 / 恢复，挂在原处理人任务行） */}
+            {((task.slaRequests?.length ?? 0) > 0) && (
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--semi-color-text-2)' }}>
+                {(task.slaRequests ?? []).map((sr) => (
+                  <Space key={sr.id} spacing={4} wrap>
+                    <Clock size={12} />
+                    <span>
+                      {sr.type === 'DELAY' ? `申请延时 ${sr.requestedDuration ?? ''}` : sr.type === 'SUSPEND' ? '申请挂起' : '申请恢复'}
+                      （{sr.applicantName}）→ {sr.status === 'PENDING' ? '待审批' : sr.status === 'APPROVED' ? `${sr.approverName ?? ''} 已通过` : `${sr.approverName ?? ''} 已驳回`}
+                      {sr.reason ? `（${sr.reason}）` : ''}
+                    </span>
+                  </Space>
+                ))}
               </div>
             )}
 

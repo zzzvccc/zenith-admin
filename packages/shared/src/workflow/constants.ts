@@ -16,6 +16,7 @@ import type {
   WorkflowFormStatus,
   WorkflowJobType,
   WorkflowNodeType,
+  WorkflowTimeoutMode,
   WorkflowTriggerExecutionStatus,
   WorkflowTriggerType,
 } from './types';
@@ -68,6 +69,7 @@ export const WORKFLOW_NODE_TYPE_LABELS: Record<WorkflowNodeType, string> = {
   trigger: '触发器',
   subProcess: '子流程',
   catchNode: '捕获',
+  slaApprove: 'SLA 审批',
 };
 
 export const WORKFLOW_NODE_TYPE_OPTIONS: Array<{ value: WorkflowNodeType; label: string }> =
@@ -311,8 +313,29 @@ export const WORKFLOW_CONNECTOR_INVOCATION_SOURCE_OPTIONS: Array<{
   label: string;
 }> = createLabelOptions(WORKFLOW_CONNECTOR_INVOCATION_SOURCES, WORKFLOW_CONNECTOR_INVOCATION_SOURCE_LABELS);
 
-/** 待办 SLA 紧急度：none=未配置超时, safe=充裕, warning=临近, overdue=已超时 */
-export const WORKFLOW_SLA_LEVELS = ['none', 'safe', 'warning', 'overdue'] as const;
+/** 待办 SLA 紧急度：none=未配置超时, safe=充裕, warning=临近, overdue=已超时, suspended=已挂起（挂起不计逾期） */
+export const WORKFLOW_SLA_LEVELS = ['none', 'safe', 'warning', 'overdue', 'suspended'] as const;
+
+/** 节点超时计时模式：wallclock=官方墙钟, smart=智能 SLA（工作日历） */
+export const WORKFLOW_TIMEOUT_MODES = ['wallclock', 'smart'] as const;
+
+export const WORKFLOW_TIMEOUT_MODE_LABELS: Record<WorkflowTimeoutMode, string> =
+  { wallclock: '官方墙钟', smart: '智能 SLA（工作日历）' };
+
+export const WORKFLOW_TIMEOUT_MODE_OPTIONS: Array<{ value: WorkflowTimeoutMode; label: string }> =
+  createLabelOptionsFromMap(WORKFLOW_TIMEOUT_MODE_LABELS);
+
+/** 任务 SLA 时钟状态（落库枚举 workflow_task_sla_status） */
+export const WORKFLOW_TASK_SLA_STATUSES = ['IDLE', 'RUNNING', 'SUSPENDED', 'DONE'] as const;
+export type WorkflowTaskSlaStatus = (typeof WORKFLOW_TASK_SLA_STATUSES)[number];
+
+/** SLA 申请类型 */
+export const WORKFLOW_SLA_REQUEST_TYPES = ['DELAY', 'SUSPEND', 'RESUME'] as const;
+export type WorkflowSlaRequestType = (typeof WORKFLOW_SLA_REQUEST_TYPES)[number];
+
+/** SLA 申请状态 */
+export const WORKFLOW_SLA_REQUEST_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'] as const;
+export type WorkflowSlaRequestStatus = (typeof WORKFLOW_SLA_REQUEST_STATUSES)[number];
 
 export const WORKFLOW_INSTANCE_PRINT_SOURCES = ['auto', 'archive', 'live'] as const;
 

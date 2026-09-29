@@ -1,5 +1,5 @@
 import type { SignatureSnapshot } from '@zenith/shared/core';
-import { pgTable, varchar, timestamp, pgEnum, integer, bigint, boolean, unique, text, uniqueIndex, index, jsonb, smallint, real, foreignKey, check, uuid as pgUuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, timestamp, pgEnum, integer, bigint, boolean, unique, text, uniqueIndex, index, jsonb, smallint, real, foreignKey, check, uuid as pgUuid, date, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { WorkflowAutomationAction, WorkflowDefinitionSnapshot, WorkflowInstanceFormSnapshot, WorkflowAttachment } from '@zenith/shared/workflow';
 import { timestampColumns, idColumn, statusColumn, sortColumn, remarkColumn } from './common';
@@ -67,7 +67,10 @@ export const workflowNodeTypeEnum = pgEnum('workflow_node_type', [
   'trigger',
   'subProcess',
   'catchNode',
+  'slaApprove',
 ]);
+
+export const workflowTaskSlaStatusEnum = pgEnum('workflow_task_sla_status', ['IDLE', 'RUNNING', 'SUSPENDED', 'DONE']);
 
 // 显式执行 Token 状态
 export const workflowTokenStatusEnum = pgEnum('workflow_token_status', ['active', 'consumed', 'dead']);
@@ -523,6 +526,17 @@ export const workflowTasks = pgTable('workflow_tasks', {
   activationId: varchar({ length: 36 }).notNull(),
   /** 抄送已读时间（仅 ccNode 任务有意义；null 表示未读） */
   ccReadAt: timestamp({ withTimezone: true }),
+  // ─── 智能 SLA 计时（展示缓存：激活时落库；沿用官方表，不加 tenantId）───
+  /** SLA 时钟状态：IDLE=未启用 / RUNNING=计时中 / SUSPENDED=已挂起 / DONE=已结束 */
+  slaStatus: workflowTaskSlaStatusEnum().default('IDLE').notNull(),
+  /** SLA 计时起点（RESUME 时重置，防止二次挂起双计工时） */
+  slaStartedAt: timestamp({ withTimezone: true }),
+  /** SLA 截止时刻（工作日历口径） */
+  slaDeadline: timestamp({ withTimezone: true }),
+  /** 已结算消耗工时（毫秒，仅工作时段累计） */
+  slaWorkElapsedMs: bigint({ mode: 'number' }).default(0).notNull(),
+  /** 挂起时刻（挂起期间不计工时） */
+  slaSuspendedAt: timestamp({ withTimezone: true }),
   createdAt: timestamp().defaultNow().notNull(),
 }, (t) => [
   unique('workflow_tasks_id_instance_unique').on(t.id, t.instanceId),
@@ -541,6 +555,78 @@ export const workflowTasks = pgTable('workflow_tasks', {
 export type WorkflowTaskRow = typeof workflowTasks.$inferSelect;
 
 export type NewWorkflowTask = typeof workflowTasks.$inferInsert;
+
+// ─── 工作日历（智能 SLA 计时的工作时段来源；wiki 域风格：独立可维护资源）───
+export const workCalendars = pgTable('work_calendars', {
+  id: idColumn(),
+  name: varchar({ length: 128 }).notNull(),
+  timezone: varchar({ length: 64 }).default('Asia/Shanghai').notNull(),
+  /** ★0=周日 … 6=周六（JS getUTCDay 编码）；周六=6、周日=0 */
+  workdays: integer().array().notNull().default([1, 2, 3, 4, 5]),
+  /** 每日工作时段（多段=跳午休） */
+  dailyHours: jsonb().$type<{ start: string; end: string }[]>()
+    .notNull().default([{ start: '09:00', end: '12:00' }, { start: '13:00', end: '18:00' }]),
+  status: statusColumn(),
+  tenantId: tenantIdColumn(),
+  ...auditColumns(),
+  ...timestampColumns(),
+}, (t) => [
+  unique('work_calendars_name_tenant_uniq').on(t.name, t.tenantId),
+]);
+
+export type WorkCalendarRow = typeof workCalendars.$inferSelect;
+export type NewWorkCalendar = typeof workCalendars.$inferInsert;
+
+export const workCalendarHolidays = pgTable('work_calendar_holidays', {
+  id: idColumn(),
+  calendarId: integer().notNull().references(() => workCalendars.id, { onDelete: 'cascade' }),
+  date: date().notNull(),
+  /** false=放假；true=补班调休（可带 specialHours 覆盖当日时段） */
+  isWorkday: boolean().notNull(),
+  specialHours: jsonb().$type<{ start: string; end: string }[]>(),
+  tenantId: tenantIdColumn(),
+  ...auditColumns(),
+  ...timestampColumns(),
+}, (t) => [
+  unique('wch_calendar_date_uniq').on(t.calendarId, t.date),
+  index('wch_calendar_idx').on(t.calendarId),
+]);
+
+export type WorkCalendarHolidayRow = typeof workCalendarHolidays.$inferSelect;
+export type NewWorkCalendarHoliday = typeof workCalendarHolidays.$inferInsert;
+
+// ─── SLA 申请（延时/挂起/恢复；workflowTaskTransfers 风格，无 updatedAt）───
+export const workflowTaskSlaRequests = pgTable('workflow_task_sla_requests', {
+  id: idColumn(),
+  taskId: integer().notNull().references(() => workflowTasks.id, { onDelete: 'cascade' }),
+  instanceId: integer().notNull().references(() => workflowInstances.id, { onDelete: 'cascade' }),
+  /** 原处理人节点 key */
+  nodeId: varchar({ length: 64 }).notNull(),
+  /** ★批次键：本次申请生成的 slaApprove 任务行共享的 nodeKey（含 reqId，天然唯一） */
+  slaNodeKey: varchar({ length: 96 }).notNull(),
+  /** DELAY | SUSPEND | RESUME */
+  type: varchar({ length: 16 }).notNull(),
+  applicantId: integer().notNull(),
+  applicantName: varchar({ length: 64 }),
+  requestedDuration: varchar({ length: 32 }),
+  requestedMs: bigint({ mode: 'number' }),
+  reason: text(),
+  slaApproverIds: integer().array(),
+  status: varchar({ length: 16 }).default('PENDING').notNull(),
+  approverId: integer(),
+  approverName: varchar({ length: 64 }),
+  approvedAt: timestamp({ withTimezone: true }),
+  result: text(),
+  tenantId: tenantIdColumn(),
+  createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index('wf_sla_req_task_idx').on(t.taskId),
+  index('wf_sla_req_instance_idx').on(t.instanceId),
+  index('wf_sla_req_sla_node_idx').on(t.slaNodeKey),
+]);
+
+export type WorkflowTaskSlaRequestRow = typeof workflowTaskSlaRequests.$inferSelect;
+export type NewWorkflowTaskSlaRequest = typeof workflowTaskSlaRequests.$inferInsert;
 
 /** 转办动作类型：转办 / 委派 / 管理员改派 / 离职交接 / 超时升级转交 */
 export const workflowTaskTransferActionEnum = pgEnum('workflow_task_transfer_action', ['transfer', 'delegate', 'reassign', 'handover', 'timeout']);

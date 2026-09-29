@@ -546,3 +546,40 @@ export const SEED_WORKFLOW_CATEGORIES: WorkflowCategory[] = [
   { id: 3, name: '财务报销', code: 'finance',    icon: 'DollarSign',   color: '#fa8c16', sort: 3, description: '财务费用报销流程',     tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
   { id: 4, name: 'IT运维',   code: 'it',         icon: 'Monitor',      color: '#722ed1', sort: 4, description: 'IT及运维相关审批',     tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
 ];
+
+// ─── 工作日历（SLA 智能计时） ────────────────────────────────────────────────
+// ★workdays 用 0=周日…6=周六（getUTCDay 编码）：周六=6、周日=0
+export const SEED_WORK_CALENDARS = [
+  {
+    id: 1,
+    name: '标准工作日（含午休）',
+    timezone: 'Asia/Shanghai',
+    workdays: [1, 2, 3, 4, 5],
+    dailyHours: [{ start: '09:00', end: '12:00' }, { start: '13:00', end: '18:00' }],
+    status: 'enabled' as const,
+    tenantId: null,
+    createdAt: SEED_DATE,
+    updatedAt: SEED_DATE,
+  },
+  {
+    id: 2,
+    name: '全天候（7×24）',
+    timezone: 'Asia/Shanghai',
+    workdays: [0, 1, 2, 3, 4, 5, 6],
+    dailyHours: [{ start: '00:00', end: '23:59' }],
+    status: 'enabled' as const,
+    tenantId: null,
+    createdAt: SEED_DATE,
+    updatedAt: SEED_DATE,
+  },
+];
+
+/** 示例节假日：放假（isWorkday=false）+ 补班调休（isWorkday=true，可带 specialHours） */
+export const SEED_WORK_CALENDAR_HOLIDAYS = [
+  { id: 1, calendarId: 1, date: '2027-01-01', isWorkday: false, specialHours: null, tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
+  { id: 2, calendarId: 1, date: '2027-02-05', isWorkday: false, specialHours: null, tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
+  { id: 3, calendarId: 1, date: '2027-02-06', isWorkday: false, specialHours: null, tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
+  { id: 4, calendarId: 1, date: '2027-02-07', isWorkday: false, specialHours: null, tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
+  // 春节调休补班（周六上班，按特殊时段计时）
+  { id: 5, calendarId: 1, date: '2027-02-20', isWorkday: true, specialHours: [{ start: '09:00', end: '17:00' }], tenantId: null, createdAt: SEED_DATE, updatedAt: SEED_DATE },
+];

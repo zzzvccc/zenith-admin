@@ -6,8 +6,8 @@
  * 默认全部收起，面板头常驻当前策略摘要（收起 ≠ 隐藏信息）；偏离默认值的面板以「已配置」标签标记；
  * 配置不完整（如退回目标节点未选）的面板初始自动展开，避免必填项被折叠遮蔽。
  */
-import { useState, type ReactNode } from 'react';
-import { Collapse, Form, InputNumber, Select, Switch, Tag, Typography, RadioGroup, Radio } from '@douyinfe/semi-ui';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Button, Collapse, Form, Input, InputNumber, Radio, RadioGroup, Select, Switch, Tag, Typography } from '@douyinfe/semi-ui';
 import { Minus, Plus } from 'lucide-react';
 import type {
   RejectStrategy,
@@ -23,6 +23,8 @@ import {
   SAME_INITIATOR_OPTIONS,
   DEDUPLICATE_OPTIONS,
 } from '../../constants';
+import type { WorkflowCustomDuration } from '@zenith/shared/workflow';
+import { useWorkCalendarOptions } from '@/hooks/queries/workflow-calendars';
 
 interface UserOption { id: number; nickname: string; }
 
@@ -123,8 +125,99 @@ export default function ApproverAdvancedSections({
     });
   };
 
+  const WALLCLOCK_UNIT_CHOICES = [
+    { value: 'minutes' as const, label: '分钟' },
+    { value: 'hours' as const, label: '小时' },
+    { value: 'days' as const, label: '天' },
+  ];
+  const SMART_UNIT_CHOICES = [
+    ...WALLCLOCK_UNIT_CHOICES,
+    { value: 'workdays' as const, label: '工作日' },
+  ];
+
   const timeoutEnabled = timeout?.enabled ?? false;
   const timeoutAction = timeout?.action ?? 'remind';
+  /** 计时模式：wallclock=官方墙钟；smart=智能 SLA（只在工作日历工作时段计时） */
+  const timeoutMode = timeout?.timeoutMode ?? 'wallclock';
+  const smartSla = timeout?.smartSla;
+  const calendarOptionsQuery = useWorkCalendarOptions(timeoutMode === 'smart');
+  const calendarOptions = useMemo(
+    () => (calendarOptionsQuery.data ?? []).map((c) => ({ value: c.id, label: `${c.name}（${c.timezone}）` })),
+    [calendarOptionsQuery.data],
+  );
+
+  const handleSmartSlaChange = (updates: Partial<NonNullable<TimeoutConfig['smartSla']>>) => {
+    handleTimeoutChange({
+      smartSla: {
+        enabled: true,
+        duration: 8,
+        unit: 'hours',
+        calendarId: calendarOptions[0]?.value ?? 0,
+        allowDelay: false,
+        allowSuspend: false,
+        requireSlaApproval: false,
+        slaApprovers: [],
+        maxDelayCount: 0,
+        maxSuspendCount: 0,
+        ...smartSla,
+        ...updates,
+      },
+    });
+  };
+
+  /** 渲染「自定义时限」数组编辑器：增删条目、标默认；默认项同步回单值 duration/unit（保证列表 SLA 计算不破） */
+  const renderCustomDurationEditor = (
+    options: WorkflowCustomDuration[] | undefined,
+    onChange: (next: WorkflowCustomDuration[]) => void,
+    unitChoices: ReadonlyArray<{ value: WorkflowCustomDuration['unit']; label: string }>,
+  ) => {
+    const list = options ?? [];
+    // 单次提交：由调用处把「数组 + 默认项单值」合并进同一个 timeout patch，
+    // 避免分两次 handleTimeoutChange 基于旧闭包相互覆盖（会丢 wallclockOptions）。
+    const commit = (next: WorkflowCustomDuration[]) => {
+      onChange(next);
+    };
+    const updateAt = (idx: number, patch: Partial<WorkflowCustomDuration>) =>
+      commit(list.map((o, i) => (i === idx ? { ...o, ...patch } : o)));
+    const removeAt = (idx: number) => commit(list.filter((_, i) => i !== idx));
+    const addOne = () =>
+      commit([...list, { key: `opt_${Date.now()}_${list.length}`, label: '', duration: 1, unit: unitChoices[0].value, isDefault: list.length === 0 }]);
+    const makeDefault = (idx: number) =>
+      commit(list.map((o, i) => ({ ...o, isDefault: i === idx })));
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {list.length === 0 && (
+          <Typography.Text type="tertiary" size="small">暂无自定义时限，点击下方按钮添加。</Typography.Text>
+        )}
+        {list.map((o, idx) => (
+          <div key={o.key} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <Input
+              value={o.label}
+              onChange={(v: string) => updateAt(idx, { label: v })}
+              placeholder="显示名，如 4 小时"
+              style={{ width: 140 }}
+            />
+            <InputNumber
+              value={o.duration}
+              onChange={(v: number | string) => updateAt(idx, { duration: Number(v) || 1 })}
+              min={1}
+              max={9999}
+              style={{ width: 90 }}
+            />
+            <Select
+              value={o.unit}
+              onChange={(v: unknown) => updateAt(idx, { unit: v as WorkflowCustomDuration['unit'] })}
+              style={{ width: 100 }}
+              optionList={unitChoices as unknown as Array<{ value: string; label: string }>}
+            />
+            <Radio checked={!!o.isDefault} onChange={() => makeDefault(idx)}>默认</Radio>
+            <Button theme="borderless" type="danger" icon={<Minus size={14} />} onClick={() => removeAt(idx)} />
+          </div>
+        ))}
+        <Button theme="light" icon={<Plus size={14} />} onClick={addOne}>新增时限</Button>
+      </div>
+    );
+  };
 
   // ── 各面板摘要与「偏离默认」判定(收起时头部常驻,信息不因折叠而丢失) ──
   const rejectLabel = REJECT_STRATEGY_OPTIONS.find((o) => o.value === rejectStrategy)?.label ?? rejectStrategy;
@@ -138,6 +231,7 @@ export default function ApproverAdvancedSections({
   const rejectIncomplete = rejectStrategy === 'returnToNode' && !rejectToNodeKey;
 
   const TIMEOUT_UNIT_LABELS = { minutes: '分钟', hours: '小时', days: '天' } as const;
+  /** 智能 SLA 时限预设：设计器下拉选项；选「自定义」再展开数字 + 单位输入（已迁移为「自定义时限」数组，见 renderCustomDurationEditor） */
   const timeoutActionLabel = timeoutAction === 'remind' ? '自动提醒' : AUTO_DECISION_LABELS[timeoutAction as 'autoApprove' | 'autoReject'];
   const timeoutSummary = timeoutEnabled
     ? `超过 ${timeout?.duration ?? 6} ${TIMEOUT_UNIT_LABELS[timeout?.unit ?? 'hours']}后${timeoutActionLabel}`
@@ -226,6 +320,63 @@ export default function ApproverAdvancedSections({
 
       {timeoutEnabled && (
         <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* ─── 工时选择模式：单选（不弹窗）/ 多选（通过弹窗选） ─── */}
+          <div>
+            <ReqLabel>工时选择模式</ReqLabel>
+            <RadioGroup
+              type="button"
+              value={timeout?.slaSelectionMode ?? 'single'}
+              onChange={(e) => handleTimeoutChange({ slaSelectionMode: e.target.value as NonNullable<TimeoutConfig['slaSelectionMode']> })}
+              className="fd-segmented-full"
+            >
+              <Radio value="single">单选（通过不弹窗，用默认项）</Radio>
+              <Radio value="multiple">多选（通过弹窗必选）</Radio>
+            </RadioGroup>
+            <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 6 }}>
+              多选时，上游审批人「通过」本节点时需为下一节点挑选时限；单选直接采用下方默认项。
+            </Typography.Text>
+          </div>
+
+          {/* ─── 计时方式：墙钟 / 智能 SLA 二选一，明确当前生效口径 ─── */}
+          <div>
+            <ReqLabel>计时方式</ReqLabel>
+            <RadioGroup
+              type="button"
+              value={timeoutMode}
+              onChange={(e) => {
+                const next = e.target.value as 'wallclock' | 'smart';
+                if (next === 'smart') {
+                  handleTimeoutChange({
+                    timeoutMode: 'smart',
+                    smartSla: {
+                      enabled: true,
+                      duration: smartSla?.duration ?? 8,
+                      unit: smartSla?.unit ?? 'hours',
+                      calendarId: smartSla?.calendarId ?? (calendarOptions[0]?.value ?? 0),
+                      allowDelay: smartSla?.allowDelay ?? false,
+                      allowSuspend: smartSla?.allowSuspend ?? false,
+                      requireSlaApproval: smartSla?.requireSlaApproval ?? false,
+                      slaApprovers: smartSla?.slaApprovers ?? [],
+                      maxDelayCount: smartSla?.maxDelayCount ?? 0,
+                      maxSuspendCount: smartSla?.maxSuspendCount ?? 0,
+                    },
+                  });
+                } else {
+                  handleTimeoutChange({ timeoutMode: 'wallclock' });
+                }
+              }}
+              className="fd-segmented-full"
+            >
+              <Radio value="wallclock">墙钟模式（自然计时）</Radio>
+              <Radio value="smart">智能 SLA 模式（按工作日历）</Radio>
+            </RadioGroup>
+            <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 6 }}>
+              {timeoutMode === 'smart'
+                ? '按工作日历工作时段计时，跳过周末 / 节假日 / 午休；日历不可用时自动降级为墙钟自然计时（默认 6 小时）。'
+                : '以自然时间连续计时（如超过 6 小时未处理即触发）。'}
+            </Typography.Text>
+          </div>
+
           <div>
             <ReqLabel>执行动作</ReqLabel>
             <RadioGroup
@@ -240,32 +391,25 @@ export default function ApproverAdvancedSections({
             </RadioGroup>
           </div>
 
-          <div>
-            <Typography.Text size="small" style={{ display: 'block', marginBottom: 8, color: 'var(--semi-color-text-1)' }}>
-              超时时间设置
-            </Typography.Text>
-            <div className="fd-timeout-inline">
-              <span>当超过</span>
-              <InputNumber
-                value={timeout?.duration ?? 6}
-                onChange={(v) => handleTimeoutChange({ duration: Number(v) || 1 })}
-                min={1}
-                max={9999}
-                style={{ width: 110 }}
-              />
-              <Select
-                value={timeout?.unit ?? 'hours'}
-                onChange={(v) => handleTimeoutChange({ unit: v as TimeoutConfig['unit'] })}
-                style={{ width: 110 }}
-                optionList={[
-                  { value: 'minutes', label: '分钟' },
-                  { value: 'hours', label: '小时' },
-                  { value: 'days', label: '天' },
-                ]}
-              />
-              <span>未处理</span>
+          {timeoutMode === 'wallclock' && (
+            <div>
+              <Typography.Text size="small" style={{ display: 'block', marginBottom: 8, color: 'var(--semi-color-text-1)' }}>
+                自定义时限（自然计时）
+              </Typography.Text>
+              {renderCustomDurationEditor(
+                timeout?.wallclockOptions,
+                (next) => {
+                  const def = next.find((o) => o.isDefault) ?? next[0];
+                  handleTimeoutChange({
+                    wallclockOptions: next,
+                    duration: def?.duration ?? 1,
+                    unit: (def?.unit ?? 'hours') as TimeoutConfig['unit'],
+                  });
+                },
+                WALLCLOCK_UNIT_CHOICES,
+              )}
             </div>
-          </div>
+          )}
 
           {timeoutAction === 'remind' && (
             <div>
@@ -329,6 +473,100 @@ export default function ApproverAdvancedSections({
               )}
             </div>
           )}
+
+          {timeoutMode === 'smart' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 12, background: 'var(--semi-color-fill-0)', borderRadius: 'var(--semi-border-radius-medium)' }}>
+              <div className="fd-field-label">智能 SLA 自定义时限</div>
+              {renderCustomDurationEditor(
+                smartSla?.options,
+                (next) => {
+                  const def = next.find((o) => o.isDefault) ?? next[0];
+                  handleSmartSlaChange({
+                    options: next,
+                    duration: def?.duration ?? 8,
+                    unit: (def?.unit ?? 'hours') as NonNullable<TimeoutConfig['smartSla']>['unit'],
+                  });
+                },
+                SMART_UNIT_CHOICES,
+              )}
+              <div>
+                <div className="fd-field-label">工作日历</div>
+                <Select
+                  value={smartSla?.calendarId ?? (calendarOptions[0]?.value ?? 0)}
+                  onChange={(v) => handleSmartSlaChange({ calendarId: Number(v) })}
+                  style={{ width: '100%' }}
+                  optionList={calendarOptions}
+                  emptyContent="暂无可用日历，请先在「工作日历」中新建"
+                />
+                <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 6 }}>
+                  工作日按 0=周日…6=周六 存储；1 个工作日 = 日历每日工时之和。
+                </Typography.Text>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 13 }}>允许处理人申请延时</span>
+                  <Switch checked={smartSla?.allowDelay ?? false} onChange={(v) => handleSmartSlaChange({ allowDelay: v })} />
+                </div>
+                {(smartSla?.allowDelay ?? false) && (
+                  <div className="fd-timeout-inline">
+                    <span>最多延时</span>
+                    <InputNumber
+                      value={smartSla?.maxDelayCount ?? 1}
+                      onChange={(v) => handleSmartSlaChange({ maxDelayCount: Number(v) || 0 })}
+                      min={0}
+                      max={99}
+                      style={{ width: 100 }}
+                    />
+                    <span>次（0 = 不限）</span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 13 }}>允许处理人申请挂起</span>
+                  <Switch checked={smartSla?.allowSuspend ?? false} onChange={(v) => handleSmartSlaChange({ allowSuspend: v })} />
+                </div>
+                {(smartSla?.allowSuspend ?? false) && (
+                  <div className="fd-timeout-inline">
+                    <span>最多挂起</span>
+                    <InputNumber
+                      value={smartSla?.maxSuspendCount ?? 1}
+                      onChange={(v) => handleSmartSlaChange({ maxSuspendCount: Number(v) || 0 })}
+                      min={0}
+                      max={99}
+                      style={{ width: 100 }}
+                    />
+                    <span>次（0 = 不限）</span>
+                  </div>
+                )}
+              </div>
+              {(smartSla?.allowDelay || smartSla?.allowSuspend) && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: 13 }}>申请需 SLA 审批人审批</span>
+                  <Switch checked={smartSla?.requireSlaApproval ?? false} onChange={(v) => handleSmartSlaChange({ requireSlaApproval: v })} />
+                </div>
+              )}
+              {(smartSla?.requireSlaApproval ?? false) && (
+                <div>
+                  <div className="fd-field-label">SLA 审批人（支持多选，会签策略跟随本节点）</div>
+                  <Select
+                    multiple
+                    value={(smartSla?.slaApprovers ?? []).flatMap((a) => a.userIds ?? [])}
+                    onChange={(v) => handleSmartSlaChange({
+                      slaApprovers: (v as number[]).length > 0
+                        ? [{ assigneeType: 'user' as const, userIds: v as number[] }]
+                        : [],
+                    })}
+                    style={{ width: '100%' }}
+                    optionList={users.map((u) => ({ value: u.id, label: u.nickname }))}
+                    emptyContent="暂无可选用户"
+                  />
+                  <Typography.Text type="tertiary" size="small" style={{ display: 'block', marginTop: 6 }}>
+                    审批通过后才会真正改动时钟；不配置审批人则申请直接生效。
+                  </Typography.Text>
+                </div>
+              )}
+            </div>
+          )}
+
         </div>
       )}
       </Collapse.Panel>

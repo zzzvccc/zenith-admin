@@ -612,7 +612,8 @@ export async function getWorkflowEngineIntrospection(
 
   const runtimeTasks: WorkflowEngineRuntimeTask[] = runtimeTaskRows.flatMap((row) => {
     const queues: WorkflowEngineQueueKey[] = [];
-    if (row.status === 'pending' && row.nodeType !== 'trigger') queues.push('humanTasks');
+    // P5：SLA 审批任务不计入 humanTasks（避免虚高）
+    if (row.status === 'pending' && row.nodeType !== 'trigger' && row.nodeType !== 'slaApprove') queues.push('humanTasks');
     if (row.nodeType === 'delay' && row.status === 'waiting') queues.push('delayWakeups');
     if (row.status === 'pending' && row.timeoutAt && row.timeoutAt <= now) queues.push('timeouts');
     if (row.nodeType === 'trigger') queues.push('triggerDispatch');

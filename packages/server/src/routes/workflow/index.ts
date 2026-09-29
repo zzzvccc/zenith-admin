@@ -2,6 +2,7 @@ import {
   workflowAttachmentContract,
   workflowAutomationContract,
   workflowCategoryContract,
+  workCalendarContract,
   workflowConnectorContract,
   workflowDataSourceContract,
   workflowDefinitionContract,
@@ -26,6 +27,7 @@ import workflowAutomationsRoutes from './workflow-automations';
 import workflowCategoriesRoutes from './workflow-categories';
 import workflowConnectorsRoutes from './workflow-connectors';
 import workflowDataSourcesRoutes from './workflow-data-sources';
+import workflowCalendarsRoutes from './workflow-calendars';
 import workflowDefinitionsRoutes from './workflow-definitions';
 import workflowDelegationsRoutes from './workflow-delegations';
 import workflowEngineRoutes from './workflow-engine';
@@ -54,6 +56,7 @@ export default defineRouteDomain({
     [workflowAutomationContract.basePath, workflowAutomationsRoutes, { feature: 'workflow' }],
     [workflowScheduleContract.basePath, workflowSchedulesRoutes, { feature: 'workflow' }],
     [workflowDataSourceContract.basePath, workflowDataSourcesRoutes, { feature: 'workflow' }],
+    [workCalendarContract.basePath, workflowCalendarsRoutes, { feature: 'workflow' }],
     [workflowConnectorContract.basePath, workflowConnectorsRoutes, { feature: 'workflow' }],
     [workflowSimulationCaseContract.basePath, workflowSimulationCasesRoutes, { feature: 'workflow' }],
     [workflowSavedViewContract.basePath, workflowSavedViewsRoutes, { feature: 'workflow' }],

@@ -118,6 +118,27 @@ export function useReplyWorkflowConsult() {
   return useApiMutation(workflowTaskContract.replyConsult, { invalidate: invalidateConsults });
 }
 
+/** SLA 视图失效：实例全清单（复用既有 invalidateAfterTaskAction）+ SLA 申请列表（前缀失效覆盖全部 taskId） */
+const invalidateSlaViews = (qc: QueryClient) => {
+  invalidateAfterTaskAction(qc);
+  void qc.invalidateQueries({ queryKey: contractKey(workflowTaskContract.slaRequests) });
+};
+
+/** 发起 SLA 申请（延时 / 挂起 / 恢复） */
+export function useCreateWorkflowSlaRequest() {
+  return useApiMutation(workflowTaskContract.createSlaRequest, { invalidate: invalidateSlaViews });
+}
+
+/** SLA 审批（同意 / 驳回，不推进原节点） */
+export function useDecideWorkflowSlaTask() {
+  return useApiMutation(workflowTaskContract.decideSlaTask, { invalidate: invalidateSlaViews });
+}
+
+/** 任务的 SLA 申请列表（时间线与申请入口共用） */
+export function useWorkflowTaskSlaRequests(taskId: number | null | undefined, enabled = true) {
+  return useApiQuery(workflowTaskContract.slaRequests, { params: { taskId: taskId ?? 0 } }, { enabled: enabled && taskId != null });
+}
+
 /** 同意 / 驳回 / 转办三个基础决策动作（移动审批端只暴露这三个） */
 export type WorkflowTaskDecisionVariables =
   | { taskId: number; action: 'approve'; body: BodyOf<typeof workflowTaskContract.approve> }

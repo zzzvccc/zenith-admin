@@ -97,6 +97,18 @@ export function useWorkflowSelectableNextApprovers(
   );
 }
 
+/** 下游「工时选择」候选分组：返回紧邻、且 slaSelectionMode='multiple' 的下游节点及其自定义时限选项 */
+export function useWorkflowSelectableNextSlaOptions(
+  taskId: number | null | undefined,
+  enabled = true,
+) {
+  return useApiQuery(
+    workflowTaskContract.selectableNextSlaOptions,
+    { params: { taskId: taskId ?? 0 } },
+    { enabled: enabled && taskId != null, placeholderData: keepPreviousData },
+  );
+}
+
 // ─── 工作流协作选人（转办/委派/加签/协办/转发/抄送共用） ─────────────────────
 
 export type { WorkflowSelectableUser };
